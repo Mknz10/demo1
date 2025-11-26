@@ -1,0 +1,12 @@
+# Backend build artifacts
+backend-java/target/
+backend-java/.mvn/
+
+# Frontend build artifacts
+frontend-react/node_modules/
+frontend-react/dist/
+
+# Common IDE folders
+.vscode/
+.idea/
+.DS_Store
