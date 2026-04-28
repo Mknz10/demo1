@@ -1,7 +1,10 @@
 package com.example.memgraph_api.service;
 
-import com.example.memgraph_api.model.Edge;
-import com.example.memgraph_api.model.Node;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
@@ -10,84 +13,132 @@ import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import com.example.memgraph_api.model.Edge;
+import com.example.memgraph_api.model.Node;
 
 @Service
 public class GraphService {
 
-    // IMPORTANT: Memgraph uses the Bolt protocol on port 7687
     private final Driver driver = GraphDatabase.driver(
             "bolt://localhost:7687",
-            AuthTokens.none() // Memgraph usually doesn't require auth by default
+            AuthTokens.none()
     );
 
-    /**
-     * Executes a Cypher query and transforms the results into a standardized format
-     * expected by the React frontend (list of Nodes and list of Edges).
-     */
-    public Map<String, List<?>> getGraphData() {
-        // The standard query to get a slice of the graph
-        String cypherQuery = "MATCH (n)-[r]-(m) RETURN n, r, m LIMIT 25";
+    // ================= UPDATE PATIENT =================
+    public boolean updatePatientDomiciliu(String identifier, String judet, String localitate) {
+
+        String cypher =
+                "MATCH (p:Patient {identifier: $identifier}) " +
+                "SET p.judet = $judet, p.localitate = $localitate " +
+                "RETURN p";
+
+        try (Session session = driver.session()) {
+            Result result = session.run(cypher, Map.of(
+                    "identifier", identifier,
+                    "judet", judet,
+                    "localitate", localitate
+            ));
+            return result.hasNext();
+        } catch (Exception e) {
+            System.err.println("Error updating domiciliu: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ================= GRAPH FETCH =================
+    public Map<String, List<?>> getGraphData(String identifier) {
+
+                String cypherQuery =
+                             (identifier != null && !identifier.isEmpty())
+                                                ? "MATCH (p:Patient {identifier: $identifier}) " +
+                                                    "OPTIONAL MATCH (n)-[r:subject]->(p) " +
+                                                    "WHERE n:Condition OR n:Observation OR n:MedicationRequest OR n:Procedure " +
+                                                    "RETURN p AS n, r, n AS m LIMIT 500"
+                                                : "MATCH (n) WHERE n:Patient OR n:Condition OR n:Observation OR n:MedicationRequest OR n:Procedure " +
+                                                    "OPTIONAL MATCH (n)-[r]->(m) " +
+                                                    "WHERE m:Patient OR m:Condition OR m:Observation OR m:MedicationRequest OR m:Procedure " +
+                                                    "RETURN n, r, m LIMIT 500";
 
         List<Node> nodes = new ArrayList<>();
         List<Edge> edges = new ArrayList<>();
 
-        // Use a Set or Map to track unique nodes and edges to avoid duplicates
         Map<String, Node> uniqueNodes = new HashMap<>();
         Map<String, Edge> uniqueEdges = new HashMap<>();
 
         try (Session session = driver.session()) {
-            Result result = session.run(cypherQuery);
+
+            Result result = session.run(
+                    cypherQuery,
+                    identifier != null && !identifier.isEmpty()
+                            ? Map.of("identifier", identifier)
+                            : Map.of()
+            );
 
             for (Record record : result.list()) {
-                // 1. Extract Nodes (n and m)
+
+                // ================= NODES =================
                 for (String key : List.of("n", "m")) {
-                    if (record.containsKey(key)) {
-                        org.neo4j.driver.types.Node neo4jNode = record.get(key).asNode();
-                        String nodeId = String.valueOf(neo4jNode.id());
+
+                    if (record.containsKey(key) && !record.get(key).isNull()) {
+
+                        var neoNode = record.get(key).asNode();
+                        String nodeId = String.valueOf(neoNode.id());
 
                         if (!uniqueNodes.containsKey(nodeId)) {
-                            // Extract properties, label, and a display name
-                            Map<String, Object> props = neo4jNode.asMap();
-                            String label = neo4jNode.labels().iterator().next(); // Get the primary label
-                            String name = props.containsKey("name") ? (String) props.get("name") : label + " " + nodeId;
-                            String color = label.equals("Person") ? "bg-indigo-500" : "bg-rose-500"; // Simple color mapping
 
-                            Node node = new Node(nodeId, label, name, props, color);
+                            Map<String, Object> props = neoNode.asMap();
+
+                            String label = neoNode.labels().iterator().hasNext()
+                                    ? neoNode.labels().iterator().next()
+                                    : "Node";
+
+                            // ================= FHIR NAME (NO FLATTENING) =================
+                            Object g = props.get("given");
+                            Object f = props.get("family");
+
+                            String given = g != null ? g.toString() : "";
+                            String family = f != null ? f.toString() : "";
+
+                            String displayName;
+
+                            if (!given.isBlank() || !family.isBlank()) {
+                                displayName = (given + " " + family).trim();
+                            } else {
+                                displayName = label + " " + nodeId;
+                            }
+
+                            Node node = new Node(nodeId, label, displayName, props);
                             uniqueNodes.put(nodeId, node);
                         }
                     }
                 }
 
-                // 2. Extract Edges (r)
-                if (record.containsKey("r")) {
-                    org.neo4j.driver.types.Relationship neo4jRel = record.get("r").asRelationship();
-                    String edgeId = String.valueOf(neo4jRel.id());
+                // ================= EDGES =================
+                if (record.containsKey("r") && !record.get("r").isNull()) {
+
+                    var rel = record.get("r").asRelationship();
+                    String edgeId = String.valueOf(rel.id());
 
                     if (!uniqueEdges.containsKey(edgeId)) {
-                        // Create the Edge object
+
                         Edge edge = new Edge(
-                            edgeId,
-                            String.valueOf(neo4jRel.startNodeId()),
-                            String.valueOf(neo4jRel.endNodeId()),
-                            neo4jRel.type(),
-                            neo4jRel.asMap()
+                                edgeId,
+                                String.valueOf(rel.startNodeId()),
+                                String.valueOf(rel.endNodeId()),
+                                rel.type(),
+                                rel.asMap()
                         );
+
                         uniqueEdges.put(edgeId, edge);
                     }
                 }
             }
 
-            // Convert the Maps back to Lists for the final JSON output
             nodes.addAll(uniqueNodes.values());
             edges.addAll(uniqueEdges.values());
 
         } catch (Exception e) {
             System.err.println("Error running Cypher query: " + e.getMessage());
-            // Return empty structure on error
             return Map.of("nodes", List.of(), "edges", List.of());
         }
 

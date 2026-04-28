@@ -9,6 +9,5 @@ public record Node(
         String id,
         String label,
         String name,
-        Map<String, Object> properties,
-        String color
+        Map<String, Object> properties
 ) {}
