@@ -34,7 +34,6 @@ public class ChatController {
             produces = MediaType.APPLICATION_JSON_VALUE
     )
     public ResponseEntity<?> chat(@RequestBody Map<String, String> payload) {
-
         String message = payload.getOrDefault("message", "").trim();
 
         if (message.isEmpty()) {
@@ -43,7 +42,6 @@ public class ChatController {
         }
 
         try {
-
             // =====================================================
             // 1. AUTH CONTEXT (ONLY SOURCE OF TRUTH)
             // =====================================================
@@ -54,9 +52,65 @@ public class ChatController {
                         "reply_html", "<div>No authenticated patient.</div>"
                 ));
             }
+// =====================================================
+            // 2. DOCUMENT SEARCH & RELATION HANDLING
+            // =====================================================
+            String msgLower = message.toLowerCase();
+            
+            // If the user explicitly asks for a file/document, handle it securely.
+            if (msgLower.contains("document") || msgLower.contains("file") || msgLower.contains("fișier")) {
+                
+                String fileName = null;
+                String docId = null;
+                
+                try {
+                    java.util.regex.Matcher mName = java.util.regex.Pattern.compile("(?:file|document|fișier)[^\\w\\d]*([\\w\\-. ]+\\.pdf)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(message);
+                    if (mName.find()) fileName = mName.group(1).trim();
+                    
+                    java.util.regex.Matcher mId = java.util.regex.Pattern.compile("id[: ]+([\\w\\-]+)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(message);
+                    if (mId.find()) docId = mId.group(1).trim();
+                } catch (Exception e) {
+                    // ignore extraction errors
+                }
+
+                String cypher = null;
+
+                if (fileName != null || docId != null) {
+                    // FIX 1: Tie the document to the specific patient to prevent data leaks.
+                    // FIX 2: Return primitive properties, NOT full nodes.
+                    if (docId != null) {
+                        cypher = "MATCH (p:Patient {identifier: '" + patientId + "'})<-[:subject]-(n)-[:source]->(d:Document {id: '" + docId + "'}) " +
+                                 "RETURN labels(n)[0] AS ResourceType, n.display AS Display, n.code AS Code, n.valueQuantity_value AS Value, d.name AS DocumentName LIMIT 50";
+                    } else {
+                        cypher = "MATCH (p:Patient {identifier: '" + patientId + "'})<-[:subject]-(n)-[:source]->(d:Document {name: '" + fileName + "'}) " +
+                                 "RETURN labels(n)[0] AS ResourceType, n.display AS Display, n.code AS Code, n.valueQuantity_value AS Value, d.name AS DocumentName LIMIT 50";
+                    }
+                } else {
+                    // FIX 3: Secure the fallback query to only show THIS patient's documents.
+                    // Assuming documents are connected to resources which point to the patient.
+                    cypher = "MATCH (p:Patient {identifier: '" + patientId + "'})<-[:subject]-(n)-[:source]->(d:Document) " +
+                             "WHERE d.name IS NOT NULL " +
+                             "RETURN DISTINCT d.name AS Name, d.uploadDate AS UploadDate, d.releaseDate AS ReleaseDate, d.id AS ID " +
+                             "ORDER BY d.uploadDate DESC LIMIT 20";
+                }
+
+                // Execute the safe, property-based query
+                List<Map<String, Object>> rows = new ArrayList<>();
+                List<String> columns;
+                try (Session session = driver.session()) {
+                    Result result = session.run(cypher);
+                    columns = result.keys();
+                    while (result.hasNext()) {
+                        rows.add(result.next().asMap());
+                    }
+                }
+                return ResponseEntity.ok(Map.of(
+                        "reply_html", buildHtml(cypher, columns, rows)
+                ));
+            }
 
             // =====================================================
-            // 2. BUILD STRICT CYPHER PROMPT
+            // 3. BUILD STRICT CYPHER PROMPT
             // =====================================================
             String schemaPrompt =
                 "You are a Cypher expert for a medical Memgraph database.\n" +
@@ -78,10 +132,10 @@ public class ChatController {
                 "- NEVER use (p)-[:subject]->(Resource)\n\n" +
 
                 "SCHEMA:\n" +
-                "- Observation(code, system, display, valueQuantity_value, valueQuantity_unit, valueBoolean, valueString)\n" +
-                "- Condition(code, system, display)\n" +
-                "- MedicationRequest(code, system, display, dosageInstruction_text)\n" +
-                "- Procedure(code, system, display)\n\n" +
+                "- Observation(code, system, display, valueQuantity_value, valueQuantity_unit, valueBoolean, valueString, documentId)\n" +
+                "- Condition(code, system, display, documentId)\n" +
+                "- MedicationRequest(code, system, display, dosageInstruction_text, documentId)\n" +
+                "- Procedure(code, system, display, documentId)\n\n" +
 
                 "RELATIONSHIP MODEL:\n" +
                 "(Observation|Condition|MedicationRequest|Procedure)-[:subject]->(p:Patient)\n\n" +
@@ -91,25 +145,25 @@ public class ChatController {
                 "- ALWAYS return properties only\n" +
                 "- ALWAYS alias fields for readability\n" +
                 "- Example correct return:\n" +
-                "  RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit\n\n" +
+                "  RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n\n" +
 
                 "EXAMPLES:\n" +
 
                 "Observations:\n" +
                 "MATCH (o:Observation)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
-                "RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit\n\n" +
+                "RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n\n" +
 
                 "Conditions:\n" +
                 "MATCH (c:Condition)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
-                "RETURN c.display AS display, c.code AS code, c.system AS system\n\n" +
+                "RETURN c.display AS display, c.code AS code, c.system AS system, c.documentId AS documentId\n\n" +
 
                 "MedicationRequests:\n" +
                 "MATCH (m:MedicationRequest)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
-                "RETURN m.display AS display, m.code AS code, m.dosageInstruction_text AS dose\n\n" +
+                "RETURN m.display AS display, m.code AS code, m.dosageInstruction_text AS dose, m.documentId AS documentId\n\n" +
 
                 "Procedures:\n" +
                 "MATCH (pr:Procedure)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
-                "RETURN pr.display AS display, pr.code AS code\n\n" +
+                "RETURN pr.display AS display, pr.code AS code, pr.documentId AS documentId\n\n" +
 
                 "USER QUESTION:\n" +
                 message;
@@ -118,60 +172,65 @@ public class ChatController {
             // 3. CALL LLM
             // =====================================================
             String cypher;
+            List<Map<String, Object>> rows = new ArrayList<>();
+            List<String> columns = new ArrayList<>();
+            boolean fallback = false;
             try {
                 cypher = chatClient.prompt()
                         .user(schemaPrompt)
                         .call()
                         .content();
             } catch (Exception e) {
-                return ResponseEntity.ok(Map.of(
-                        "reply_html", "<div>LLM error: " + e.getMessage() + "</div>"
-                ));
+                // fallback on LLM error
+                fallback = true;
+                cypher = null;
             }
 
-            if (cypher == null || cypher.isBlank()) {
-                return ResponseEntity.ok(Map.of(
-                        "reply_html", "<div>LLM returned empty response.</div>"
-                ));
+            if (cypher == null || cypher.isBlank() || !isValidCypher(cleanCypher(cypher)) || isDangerous(cleanCypher(cypher))) {
+                fallback = true;
             }
 
-            // =====================================================
-            // 4. CLEAN + VALIDATE CYPHER
-            // =====================================================
-            cypher = cleanCypher(cypher);
-
-            if (!isValidCypher(cypher)) {
-                return ResponseEntity.ok(Map.of(
-                        "reply_html", "<div>Invalid Cypher generated.</div>",
-                        "raw", cypher
-                ));
-            }
-
-            if (isDangerous(cypher)) {
-                return ResponseEntity.ok(Map.of(
-                        "reply_html", "<div>Blocked unsafe query.</div>",
-                        "cypher", cypher
-                ));
-            }
-
-            // =====================================================
-            // 5. EXECUTE QUERY
-            // =====================================================
-            List<Map<String, Object>> rows = new ArrayList<>();
-            List<String> columns;
-
-            try (Session session = driver.session()) {
-                Result result = session.run(cypher);
-                columns = result.keys();
-
-                while (result.hasNext()) {
-                    rows.add(result.next().asMap());
+            if (!fallback) {
+                // Try to execute the generated Cypher
+                cypher = cleanCypher(cypher);
+                try (Session session = driver.session()) {
+                    Result result = session.run(cypher);
+                    columns = result.keys();
+                    while (result.hasNext()) {
+                        rows.add(result.next().asMap());
+                    }
+                } catch (Exception e) {
+                    // fallback on Cypher execution error (e.g., syntax)
+                    fallback = true;
                 }
             }
 
-            // =====================================================
-            // 6. FORMAT RESPONSE
-            // =====================================================
+            // If fallback is needed or no results, show all observations and medications
+            if (fallback || rows.isEmpty()) {
+                // Try to show all observations and medications for the patient
+                String fallbackCypher = "CALL {\n" +
+                        "  MATCH (o:Observation)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                        "  RETURN 'Observation' AS type, o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n" +
+                        "  UNION\n" +
+                        "  MATCH (m:MedicationRequest)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                        "  RETURN 'Medication' AS type, m.display AS display, m.code AS code, m.dosageInstruction_text AS value, '' AS unit, m.documentId AS documentId\n" +
+                        "}\nRETURN type, display, code, value, unit, documentId";
+                cypher = fallbackCypher;
+                rows = new ArrayList<>();
+                columns = new ArrayList<>();
+                try (Session session = driver.session()) {
+                    Result result = session.run(cypher);
+                    columns = result.keys();
+                    while (result.hasNext()) {
+                        rows.add(result.next().asMap());
+                    }
+                } catch (Exception e) {
+                    return ResponseEntity.ok(Map.of(
+                            "reply_html", "<div>Server error: " + e.getMessage() + "</div>"
+                    ));
+                }
+            }
+
             return ResponseEntity.ok(Map.of(
                     "reply_html", buildHtml(cypher, columns, rows)
             ));
