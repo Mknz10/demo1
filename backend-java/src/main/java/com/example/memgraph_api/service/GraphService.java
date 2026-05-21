@@ -48,16 +48,20 @@ public class GraphService {
     // ================= GRAPH FETCH =================
     public Map<String, List<?>> getGraphData(String identifier) {
 
-                String cypherQuery =
-                             (identifier != null && !identifier.isEmpty())
-                                                ? "MATCH (p:Patient {identifier: $identifier}) " +
-                                                    "OPTIONAL MATCH (n)-[r:subject]->(p) " +
-                                                    "WHERE n:Condition OR n:Observation OR n:MedicationRequest OR n:Procedure " +
-                                                    "RETURN p AS n, r, n AS m LIMIT 500"
-                                                : "MATCH (n) WHERE n:Patient OR n:Condition OR n:Observation OR n:MedicationRequest OR n:Procedure " +
-                                                    "OPTIONAL MATCH (n)-[r]->(m) " +
-                                                    "WHERE m:Patient OR m:Condition OR m:Observation OR m:MedicationRequest OR m:Procedure " +
-                                                    "RETURN n, r, m LIMIT 500";
+            String cypherQuery =
+    (identifier != null && !identifier.isEmpty())
+        ? "MATCH (p) " +
+          "WHERE (p:Patient OR p:Practitioner) " +
+          "AND p.identifier = $identifier " +
+          "OPTIONAL MATCH (p)-[r]-(other) " +
+          "RETURN p AS n, r, other AS m LIMIT 500"
+        : "MATCH (n) " +
+          "WHERE n:Patient OR n:Condition OR n:Observation " +
+          "OR n:MedicationRequest OR n:Procedure OR n:Practitioner " +
+          "OPTIONAL MATCH (n)-[r]->(m) " +
+          "WHERE m:Patient OR m:Condition OR m:Observation " +
+          "OR m:MedicationRequest OR m:Procedure OR m:Practitioner " +
+          "RETURN n, r, m LIMIT 500";
 
         List<Node> nodes = new ArrayList<>();
         List<Edge> edges = new ArrayList<>();

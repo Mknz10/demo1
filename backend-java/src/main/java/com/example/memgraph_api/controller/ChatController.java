@@ -11,6 +11,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/chat")
+@CrossOrigin(origins = "*")
 public class ChatController {
 
     private final ChatClient chatClient;
@@ -45,13 +47,26 @@ public class ChatController {
             // =====================================================
             // 1. AUTH CONTEXT (ONLY SOURCE OF TRUTH)
             // =====================================================
-            String patientId = getAuthenticatedPatientId();
-
-            if (patientId == null) {
+            String identifier = payload.get("identifier");
+            
+            if (identifier == null || identifier.isBlank()) {
                 return ResponseEntity.ok(Map.of(
-                        "reply_html", "<div>No authenticated patient.</div>"
+                        "reply_html", "<div>Missing user identifier. Please log in.</div>"
                 ));
             }
+
+            String role = getUserRole(identifier);
+            if (role == null) {
+                return ResponseEntity.ok(Map.of(
+                        "reply_html", "<div>User not found or unauthenticated.</div>"
+                ));
+            }
+
+            boolean isPractitioner = "Practitioner".equals(role);
+            String baseMatch = isPractitioner 
+                ? "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)" 
+                : "MATCH (p:Patient {identifier: '" + identifier + "'})";
+
 // =====================================================
             // 2. DOCUMENT SEARCH & RELATION HANDLING
             // =====================================================
@@ -78,20 +93,28 @@ public class ChatController {
                 if (fileName != null || docId != null) {
                     // FIX 1: Tie the document to the specific patient to prevent data leaks.
                     // FIX 2: Return primitive properties, NOT full nodes.
-                    if (docId != null) {
-                        cypher = "MATCH (p:Patient {identifier: '" + patientId + "'})<-[:subject]-(n)-[:source]->(d:Document {id: '" + docId + "'}) " +
+                    String matchDoc = docId != null ? "{id: '" + docId + "'}" : "{name: '" + fileName + "'}";
+                    if (isPractitioner) {
+                        cypher = "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document " + matchDoc + ") " +
                                  "RETURN labels(n)[0] AS ResourceType, n.display AS Display, n.code AS Code, n.valueQuantity_value AS Value, d.name AS DocumentName LIMIT 50";
                     } else {
-                        cypher = "MATCH (p:Patient {identifier: '" + patientId + "'})<-[:subject]-(n)-[:source]->(d:Document {name: '" + fileName + "'}) " +
+                        cypher = "MATCH (p:Patient {identifier: '" + identifier + "'})<-[:subject]-(n)-[:source]->(d:Document " + matchDoc + ") " +
                                  "RETURN labels(n)[0] AS ResourceType, n.display AS Display, n.code AS Code, n.valueQuantity_value AS Value, d.name AS DocumentName LIMIT 50";
                     }
                 } else {
                     // FIX 3: Secure the fallback query to only show THIS patient's documents.
                     // Assuming documents are connected to resources which point to the patient.
-                    cypher = "MATCH (p:Patient {identifier: '" + patientId + "'})<-[:subject]-(n)-[:source]->(d:Document) " +
-                             "WHERE d.name IS NOT NULL " +
-                             "RETURN DISTINCT d.name AS Name, d.uploadDate AS UploadDate, d.releaseDate AS ReleaseDate, d.id AS ID " +
-                             "ORDER BY d.uploadDate DESC LIMIT 20";
+                    if (isPractitioner) {
+                        cypher = "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " +
+                                 "WHERE d.name IS NOT NULL " +
+                                 "RETURN DISTINCT d.name AS Name, p.identifier AS PatientID, d.uploadDate AS UploadDate, d.releaseDate AS ReleaseDate, d.id AS ID " +
+                                 "ORDER BY d.uploadDate DESC LIMIT 20";
+                    } else {
+                        cypher = "MATCH (p:Patient {identifier: '" + identifier + "'})<-[:subject]-(n)-[:source]->(d:Document) " +
+                                 "WHERE d.name IS NOT NULL " +
+                                 "RETURN DISTINCT d.name AS Name, d.uploadDate AS UploadDate, d.releaseDate AS ReleaseDate, d.id AS ID " +
+                                 "ORDER BY d.uploadDate DESC LIMIT 20";
+                    }
                 }
 
                 // Execute the safe, property-based query
@@ -112,15 +135,33 @@ public class ChatController {
             // =====================================================
             // 3. BUILD STRICT CYPHER PROMPT
             // =====================================================
+            String ruleText = isPractitioner ?
+                "- You are a Practitioner's assistant. You MUST ONLY query data for patients connected via a `:TREATS` relationship.\n" +
+                "- ALWAYS start your query with exactly:\n  " + baseMatch + "\n" +
+                "- If the user asks about a specific person by name (e.g., 'Andreea'), you MUST filter by their name.\n" +
+                "- To filter by name, use `WHERE p.name[0].given[0] CONTAINS 'Andreea'` for first name or `WHERE p.name[0].family CONTAINS 'Popescu'` for last name.\n"
+                :
+                "- You are a Patient's assistant. You can ONLY see your own data.\n" +
+                "- ALWAYS start your query with exactly:\n  " + baseMatch + "\n" +
+                "- NEVER search for other patients by name.\n";
+
+            String practitionerNameExample = isPractitioner ?
+                "Find medications for a patient named 'Andreea':\n" +
+                baseMatch + " WHERE p.name[0].given[0] CONTAINS 'Andreea'\n" +
+                "MATCH (m:MedicationRequest)-[:subject]->(p)\n" +
+                "RETURN m.display AS Medication, m.dosageInstruction_text AS Dose, p.name[0].given[0] AS PatientFirstName, p.identifier AS PatientID\n\n"
+                : "";
+            String patientNameExample =
+                "Find the current patient's name (nume pacient):\n" +
+                baseMatch + "\n" +
+                "RETURN p.name[0].given[0] AS GivenName, p.name[0].family AS FamilyName, p.identifier AS Identifier\n\n";
+
             String schemaPrompt =
                 "You are a Cypher expert for a medical Memgraph database.\n" +
                 "You generate ONLY READ-ONLY Cypher queries.\n\n" +
 
                 "HARD RULES:\n" +
-                "- NEVER use Patient.name for matching\n" +
-                "- NEVER infer or search by name\n" +
-                "- ALWAYS use ONLY this patient identifier:\n" +
-                "  MATCH (p:Patient {identifier: '" + patientId + "'})\n" +
+                ruleText +
                 "- NEVER output explanations or text\n" +
                 "- Output ONLY Cypher starting with MATCH\n" +
                 "- NEVER use CREATE, MERGE, DELETE, SET, DROP\n\n" +
@@ -136,9 +177,11 @@ public class ChatController {
                 "- Condition(code, system, display, documentId)\n" +
                 "- MedicationRequest(code, system, display, dosageInstruction_text, documentId)\n" +
                 "- Procedure(code, system, display, documentId)\n\n" +
+                "- Practitioner(name, gender, birthDate)\n" +
 
                 "RELATIONSHIP MODEL:\n" +
                 "(Observation|Condition|MedicationRequest|Procedure)-[:subject]->(p:Patient)\n\n" +
+                "(Practitioner)-[:TREATS]->(Patient)\n" +
 
                 "RETURN RULES (VERY IMPORTANT):\n" +
                 "- NEVER return full nodes (NO: RETURN r, RETURN o, RETURN c)\n" +
@@ -148,22 +191,33 @@ public class ChatController {
                 "  RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n\n" +
 
                 "EXAMPLES:\n" +
+                practitionerNameExample +
+                patientNameExample +
 
                 "Observations:\n" +
-                "MATCH (o:Observation)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                baseMatch + "\n" +
+                "MATCH (o:Observation)-[:subject]->(p)\n" +
                 "RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n\n" +
 
                 "Conditions:\n" +
-                "MATCH (c:Condition)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                baseMatch + "\n" +
+                "MATCH (c:Condition)-[:subject]->(p)\n" +
                 "RETURN c.display AS display, c.code AS code, c.system AS system, c.documentId AS documentId\n\n" +
 
                 "MedicationRequests:\n" +
-                "MATCH (m:MedicationRequest)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                baseMatch + "\n" +
+                "MATCH (m:MedicationRequest)-[:subject]->(p)\n" +
                 "RETURN m.display AS display, m.code AS code, m.dosageInstruction_text AS dose, m.documentId AS documentId\n\n" +
 
                 "Procedures:\n" +
-                "MATCH (pr:Procedure)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                baseMatch + "\n" +
+                "MATCH (pr:Procedure)-[:subject]->(p)\n" +
                 "RETURN pr.display AS display, pr.code AS code, pr.documentId AS documentId\n\n" +
+
+                "Practitioners:\n" +
+                baseMatch + "\n" +
+                "MATCH (prac:Practitioner)-[:TREATS]->(p)\n" +
+                "RETURN prac.name AS name, prac.identifier AS identifier, prac.gender AS gender, prac.birthDate AS birthDate\n\n" +
 
                 "USER QUESTION:\n" +
                 message;
@@ -209,10 +263,12 @@ public class ChatController {
             if (fallback || rows.isEmpty()) {
                 // Try to show all observations and medications for the patient
                 String fallbackCypher = "CALL {\n" +
-                        "  MATCH (o:Observation)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                        "  " + baseMatch + "\n" +
+                        "  MATCH (o:Observation)-[:subject]->(p)\n" +
                         "  RETURN 'Observation' AS type, o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n" +
                         "  UNION\n" +
-                        "  MATCH (m:MedicationRequest)-[:subject]->(p:Patient {identifier: '" + patientId + "'})\n" +
+                        "  " + baseMatch + "\n" +
+                        "  MATCH (m:MedicationRequest)-[:subject]->(p)\n" +
                         "  RETURN 'Medication' AS type, m.display AS display, m.code AS code, m.dosageInstruction_text AS value, '' AS unit, m.documentId AS documentId\n" +
                         "}\nRETURN type, display, code, value, unit, documentId";
                 cypher = fallbackCypher;
@@ -245,9 +301,19 @@ public class ChatController {
     // =====================================================
     // AUTH (REPLACE WITH JWT / SPRING SECURITY)
     // =====================================================
-    private String getAuthenticatedPatientId() {
-        // TODO: replace with real auth extraction
-        return "6040815241248";
+    private String getUserRole(String identifier) {
+        try (Session session = driver.session()) {
+            Result result = session.run(
+                    "MATCH (u {identifier: $id}) WHERE u:Patient OR u:Practitioner RETURN labels(u)[0] AS role LIMIT 1",
+                    Map.of("id", identifier)
+            );
+            if (result.hasNext()) {
+                return result.next().get("role").asString();
+            }
+        } catch (Exception e) {
+            System.err.println("Error fetching user role: " + e.getMessage());
+        }
+        return null;
     }
 
     // =====================================================

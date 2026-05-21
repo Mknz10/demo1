@@ -1,27 +1,28 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
-export default function Profile({ graphData }) {
-  // Debug log to help diagnose missing data
+export default function PractitionerProfile({ graphData }) {
   const loggedIdentifier = localStorage.getItem("loggedIdentifier");
-  console.log("[Profile] graphData:", graphData);
-  console.log("[Profile] loggedIdentifier:", loggedIdentifier);
+  console.log("[PractitionerProfile] graphData:", graphData);
+  console.log("[PractitionerProfile] loggedIdentifier:", loggedIdentifier);
 
-  // ...existing code...
   const navigate = useNavigate();
 
   let userNode = null;
   if (graphData && Array.isArray(graphData.nodes)) {
+    // 🔴 Schimbat pentru a căuta nodul de tip "Practitioner"
     userNode = graphData.nodes.find(
       (node) =>
-        node.label === "Patient" &&
+        node.label === "Practitioner" &&
         node.properties?.identifier === loggedIdentifier,
     );
   }
 
-  // Extract lastName and firstName from FHIR-style 'name' array
+  // Extragere Nume, Prenume și Prefix (ex: "Dr.")
   let lastName = "-";
   let firstName = "-";
+  let prefix = "";
+
   if (
     userNode?.properties?.name &&
     Array.isArray(userNode.properties.name) &&
@@ -30,27 +31,28 @@ export default function Profile({ graphData }) {
     const nameObj =
       userNode.properties.name.find((n) => n.use === "official") ||
       userNode.properties.name[0];
+
     lastName = nameObj.family || "-";
+
     if (Array.isArray(nameObj.given) && nameObj.given.length > 0) {
       firstName = nameObj.given.join(" ");
     }
+
+    // Extragem titlul dacă există (specific medicilor)
+    if (Array.isArray(nameObj.prefix) && nameObj.prefix.length > 0) {
+      prefix = nameObj.prefix.join(" ") + " ";
+    }
   }
+
   const gender = userNode?.properties?.gender || "-";
   const birthDate = userNode?.properties?.birthDate || "-";
 
-  // Stare pentru câmpurile editabile
+  // Stare pentru câmpurile editabile (le poți schimba ulterior în specializare, cabinet, etc.)
   const [judet, setJudet] = useState("");
   const [localitate, setLocalitate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-
-  // Stare nouă pentru a controla modul de editare
   const [isEditing, setIsEditing] = useState(false);
 
-  // Stare pentru permisiuni acces doctor
-  const [accessEnabled, setAccessEnabled] = useState(true);
-  const [isToggling, setIsToggling] = useState(false);
-
-  // Când datele vin din graf, precompletăm câmpurile dacă ele există deja
   useEffect(() => {
     if (userNode?.properties) {
       setJudet(userNode.properties.judet || "");
@@ -58,6 +60,7 @@ export default function Profile({ graphData }) {
     }
   }, [userNode]);
 
+  // Calcul Vârstă
   let age = "-";
   if (birthDate && birthDate !== "-") {
     let birth;
@@ -78,54 +81,10 @@ export default function Profile({ graphData }) {
     }
   }
 
-  // Fetch initial status
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const res = await fetch(
-          `http://localhost:8080/auth/access-status?identifier=${loggedIdentifier}`,
-        );
-        const status = await res.json();
-        setAccessEnabled(status);
-      } catch (err) {
-        console.error("Failed to fetch access status", err);
-      }
-    };
-    if (loggedIdentifier) fetchStatus();
-  }, [loggedIdentifier]);
-
-  // Funcția de comutare acces doctor
-  const handleToggleAccess = async () => {
-    setIsToggling(true);
-    const newStatus = !accessEnabled;
-
-    try {
-      const res = await fetch("http://localhost:8080/auth/toggle-access", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          identifier: loggedIdentifier,
-          enable: newStatus,
-        }),
-      });
-
-      if (res.ok) {
-        setAccessEnabled(newStatus);
-      } else {
-        alert("Eroare la modificarea permisiunilor.");
-      }
-    } catch (err) {
-      console.error("Toggle failed", err);
-      alert("Eroare de rețea la conectarea cu serverul.");
-    } finally {
-      setIsToggling(false);
-    }
-  };
-
-  // Funcția de salvare către Backend
   const handleSave = async () => {
     setIsSaving(true);
     try {
+      // 🔴 Atenție: Poate vrei să schimbi acest endpoint în /api/practitioner/update mai târziu
       const response = await fetch("http://localhost:8080/api/profile/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -137,8 +96,8 @@ export default function Profile({ graphData }) {
       });
 
       if (response.ok) {
-        alert("Domiciliul a fost salvat cu succes!");
-        setIsEditing(false); // Ieșim din modul de editare după salvarea cu succes
+        alert("Datele au fost salvate cu succes!");
+        setIsEditing(false);
       } else {
         alert("A apărut o eroare la salvare.");
       }
@@ -150,7 +109,6 @@ export default function Profile({ graphData }) {
     }
   };
 
-  // Funcția pentru anularea editării (revine la datele inițiale din baza de date)
   const handleCancel = () => {
     setIsEditing(false);
     setJudet(userNode?.properties?.judet || "");
@@ -158,67 +116,61 @@ export default function Profile({ graphData }) {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-green-100 via-teal-100 to-blue-100 text-gray-900 font-sans">
-      <div className="bg-white/90 p-10 rounded-3xl shadow-2xl w-96 border-2 border-teal-400 flex flex-col items-center">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-100 via-indigo-100 to-purple-100 text-gray-900 font-sans">
+      <div className="bg-white/90 p-10 rounded-3xl shadow-2xl w-96 border-2 border-indigo-400 flex flex-col items-center">
         <div className="flex items-center gap-2 mb-4">
+          {/* Icoană specifică pentru medic (Cruce medicală/Plus) */}
           <svg
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
             strokeWidth={1.5}
             stroke="currentColor"
-            className="w-8 h-8 text-red-500"
+            className="w-8 h-8 text-indigo-600"
           >
             <path
               strokeLinecap="round"
               strokeLinejoin="round"
-              d="M12 6v6l4 2"
-            />
-            <circle
-              cx="12"
-              cy="12"
-              r="9"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              fill="none"
+              d="M12 4.5v15m7.5-7.5h-15"
             />
           </svg>
-          <h2 className="text-3xl font-extrabold text-center text-teal-700">
-            Profil pacient
+
+          <h2 className="text-3xl font-extrabold text-center text-indigo-800">
+            Profil Medic
           </h2>
         </div>
 
         {/* Date Non-Editabile */}
         <div className="w-full mb-2">
-          <span className="font-bold text-green-700">Nume:</span> {lastName}
+          <span className="font-bold text-indigo-700">Nume:</span> {prefix}
+          {lastName}
         </div>
         <div className="w-full mb-2">
-          <span className="font-bold text-green-700">Prenume:</span> {firstName}
+          <span className="font-bold text-indigo-700">Prenume:</span>{" "}
+          {firstName}
         </div>
         <div className="w-full mb-2">
-          <span className="font-bold text-blue-700">Identifier:</span>{" "}
+          <span className="font-bold text-blue-700">Licență/ID:</span>{" "}
           {loggedIdentifier}
         </div>
         <div className="w-full mb-2">
           <span className="font-bold text-pink-700">Gen:</span> {gender}
         </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-indigo-700">Data nașterii:</span>{" "}
-          {birthDate}
-        </div>
         <div className="w-full mb-6 border-b pb-4">
           <span className="font-bold text-purple-700">Vârstă:</span> {age}
         </div>
 
-        {/* Date Editabile (Domiciliu) */}
+        {/* Date Editabile (pe care le vei schimba tu ulterior) */}
         <div className="w-full mb-3 flex flex-col">
-          <label className="font-bold text-teal-700 text-sm mb-1">Județ:</label>
+          <label className="font-bold text-indigo-700 text-sm mb-1">
+            Județ Cabinet:
+          </label>
           {isEditing ? (
             <input
               type="text"
               value={judet}
               onChange={(e) => setJudet(e.target.value)}
-              className="w-full px-3 py-2 border border-teal-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500"
+              className="w-full px-3 py-2 border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="Ex: Maramureș"
             />
           ) : (
@@ -227,44 +179,20 @@ export default function Profile({ graphData }) {
         </div>
 
         <div className="w-full mb-6 flex flex-col">
-          <label className="font-bold text-teal-700 text-sm mb-1">
-            Localitate:
+          <label className="font-bold text-indigo-700 text-sm mb-1">
+            Localitate Cabinet:
           </label>
           {isEditing ? (
             <input
               type="text"
               value={localitate}
               onChange={(e) => setLocalitate(e.target.value)}
-              className="w-full px-3 py-2 border border-teal-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500"
+              className="w-full px-3 py-2 border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
               placeholder="Ex: Baia Mare"
             />
           ) : (
             <span className="text-gray-800">{localitate || "-"}</span>
           )}
-        </div>
-
-        {/* Toggle Acces Doctor */}
-        <div className="w-full mb-6 p-4 border border-teal-200 rounded-xl bg-teal-50 flex flex-col items-center">
-          <h3 className="font-bold text-teal-800 mb-2">Permisiuni Doctor</h3>
-          <p className="text-sm text-teal-600 mb-4 text-center">
-            Alegeți dacă medicul dumneavoastră are permisiunea de a vizualiza
-            dosarul.
-          </p>
-          <button
-            onClick={handleToggleAccess}
-            disabled={isToggling}
-            className={`px-4 py-2 rounded-lg font-bold text-white shadow transition-all ${
-              accessEnabled
-                ? "bg-red-500 hover:bg-red-600"
-                : "bg-green-500 hover:bg-green-600"
-            } disabled:opacity-50`}
-          >
-            {isToggling
-              ? "Se actualizează..."
-              : accessEnabled
-                ? "Revocă Accesul"
-                : "Permite Accesul"}
-          </button>
         </div>
 
         {/* Butoane condiționate */}
@@ -279,7 +207,7 @@ export default function Profile({ graphData }) {
                 Anulează
               </button>
               <button
-                className="flex-1 py-2 bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white rounded-lg font-semibold shadow transition disabled:opacity-50"
+                className="flex-1 py-2 bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 text-white rounded-lg font-semibold shadow transition disabled:opacity-50"
                 onClick={handleSave}
                 disabled={isSaving}
               >
@@ -289,13 +217,13 @@ export default function Profile({ graphData }) {
           ) : (
             <>
               <button
-                className="flex-1 py-2 bg-gradient-to-r from-teal-500 to-green-400 hover:from-teal-600 hover:to-green-500 text-white rounded-lg font-semibold shadow transition"
+                className="flex-1 py-2 bg-gradient-to-r from-indigo-400 to-blue-400 hover:from-indigo-500 hover:to-blue-500 text-white rounded-lg font-semibold shadow transition"
                 onClick={() => navigate("/")}
               >
                 Înapoi
               </button>
               <button
-                className="flex-1 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg font-semibold shadow transition"
+                className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold shadow transition"
                 onClick={() => setIsEditing(true)}
               >
                 Editează

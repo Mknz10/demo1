@@ -9,9 +9,11 @@ import org.neo4j.driver.Session;
 import org.neo4j.driver.Values;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -37,9 +39,12 @@ public class AuthController {
 
         try (Session session = driver.session()) {
 
+            // Changed: Checks for either a Patient OR a Practitioner node
             boolean exists = session.executeRead(tx -> {
                 Result result = tx.run(
-                        "MATCH (p:Patient {identifier: $identifier}) RETURN 1 LIMIT 1",
+                        "MATCH (u {identifier: $identifier}) " +
+                        "WHERE u:Patient OR u:Practitioner " +
+                        "RETURN 1 LIMIT 1",
                         Values.parameters("identifier", identifier)
                 );
                 return result.hasNext();
@@ -47,7 +52,7 @@ public class AuthController {
 
             if (!exists) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body("Patient not found");
+                        .body("User not found"); // Updated error message
             }
 
         } catch (Exception e) {
@@ -73,6 +78,12 @@ public class AuthController {
         String familyName = extractFamilyName(payload);
         String gender = getString(payload, "gender");
         String birthDate = getString(payload, "birthDate");
+        String rawPractitionerId = getString(payload, "practitionerId");
+
+        // Fallback to the default Practitioner if the frontend doesn't send it yet
+        final String practitionerId = (rawPractitionerId == null || rawPractitionerId.isBlank()) 
+                ? "1234567890" 
+                : rawPractitionerId.trim();
 
         if (identifier == null) {
             return ResponseEntity.badRequest().body("Missing identifier");
@@ -110,7 +121,18 @@ public class AuthController {
                             "gender", gender,
                             "birthDate", birthDate
                     )
-                );
+                ).consume();
+
+                tx.run(
+                    "MATCH (pr:Practitioner {identifier: $prId}) " +
+                    "MATCH (p:Patient {identifier: $pid}) " +
+                    "MERGE (pr)-[:TREATS]->(p)",
+                    Values.parameters(
+                            "prId", practitionerId,
+                            "pid", identifier
+                    )
+                ).consume();
+
                 return null;
             });
 
@@ -120,6 +142,52 @@ public class AuthController {
         }
 
         return ResponseEntity.ok("Patient registered (FHIR)");
+    }
+
+    // ================= DATA ACCESS TOGGLE =================
+    @GetMapping("/access-status")
+    public ResponseEntity<Boolean> getAccessStatus(@RequestParam String identifier) {
+        try (Session session = driver.session()) {
+            boolean hasAccess = session.executeRead(tx -> {
+                Result result = tx.run(
+                        "MATCH (:Practitioner)-[:TREATS]->(p:Patient {identifier: $pid}) RETURN count(p) > 0 AS hasAccess",
+                        Values.parameters("pid", identifier)
+                );
+                return result.hasNext() && result.next().get("hasAccess").asBoolean();
+            });
+            return ResponseEntity.ok(hasAccess);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(false);
+        }
+    }
+
+    @PostMapping("/toggle-access")
+    public ResponseEntity<String> toggleAccess(@RequestBody Map<String, Object> payload) {
+        String patientId = getString(payload, "identifier");
+        
+        Object enableObj = payload.get("enable");
+        Boolean enable = (enableObj instanceof Boolean) ? (Boolean) enableObj 
+                       : (enableObj != null ? Boolean.parseBoolean(enableObj.toString()) : null);
+
+        if (patientId == null || enable == null) return ResponseEntity.badRequest().body("Missing parameters");
+
+        try (Session session = driver.session()) {
+            session.executeWrite(tx -> {
+                if (enable) {
+                    tx.run("MATCH (p:Patient {identifier: $pid}) " +
+                           "MATCH (pr:Practitioner {identifier: coalesce(p.practitionerId, '1234567890')}) " +
+                           "MERGE (pr)-[:TREATS]->(p)", Values.parameters("pid", patientId)).consume();
+                } else {
+                    tx.run("MATCH (pr:Practitioner)-[r:TREATS]->(p:Patient {identifier: $pid}) " +
+                           "SET p.practitionerId = pr.identifier " +
+                           "DELETE r", Values.parameters("pid", patientId)).consume();
+                }
+                return null;
+            });
+            return ResponseEntity.ok(enable ? "Access enabled" : "Access disabled");
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Database error");
+        }
     }
 
     // ================= FHIR HELPERS =================

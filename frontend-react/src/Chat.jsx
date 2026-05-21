@@ -1,110 +1,210 @@
 import React, { useState, useRef, useEffect } from "react";
 
 export default function Chat() {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const messagesEndRef = useRef(null);
+  const [message, setMessage] = useState("");
+  const [chatHistory, setChatHistory] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const chatEndRef = useRef(null);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
-
+  // Auto-scroll to the bottom when new messages arrive
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatHistory]);
 
-  const appendMessage = (msg, isUser, isHtml = false) => {
-    setMessages((prev) => [...prev, { text: msg, isUser, isHtml }]);
-  };
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!message.trim()) return;
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text) return;
+    // 1. Fetch the user's identifier from localStorage
+    const loggedIdentifier = localStorage.getItem("loggedIdentifier");
 
-    appendMessage(text, true);
-    setInput("");
-    setLoading(true);
-    appendMessage("Gândesc și generez răspuns...", false);
+    // Safety check if the user somehow logged out
+    if (!loggedIdentifier) {
+      setChatHistory((prev) => [
+        ...prev,
+        { sender: "user", text: message },
+        {
+          sender: "bot",
+          html: "<div style='color:red;'>Missing user identifier. Please log in.</div>",
+        },
+      ]);
+      setMessage("");
+      return;
+    }
+
+    const userMessage = message;
+    setMessage("");
+
+    // Add the user's message to the chat window
+    setChatHistory((prev) => [...prev, { sender: "user", text: userMessage }]);
+    setIsLoading(true);
 
     try {
-      const res = await fetch("/api/chat", {
+      // 2. Send the message AND identifier to the backend
+      const response = await fetch("http://localhost:8080/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: userMessage,
+          identifier: loggedIdentifier, // <-- This fixes the backend error!
+        }),
       });
 
-      let data;
-      try {
-        data = await res.json();
-      } catch {
-        setMessages((prev) => prev.slice(0, -1));
-        appendMessage("Eroare la parsarea răspunsului serverului.", false);
-        return;
-      }
+      const data = await response.json();
 
-      setMessages((prev) => prev.slice(0, -1)); // remove loading
-
-      if (data.error) {
-        appendMessage(`Eroare server: ${data.error}`, false);
-      } else {
-        appendMessage(data.reply_html, false, true);
-      }
-    } catch (e) {
-      setMessages((prev) => prev.slice(0, -1));
-      appendMessage(`Eroare rețea: ${e.message}`, false);
+      // 3. Add the bot's HTML response to the chat window
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          sender: "bot",
+          html:
+            data.reply_html ||
+            `<div>${data.error || "Unknown error occurred"}</div>`,
+        },
+      ]);
+    } catch (error) {
+      console.error("Chat error:", error);
+      setChatHistory((prev) => [
+        ...prev,
+        {
+          sender: "bot",
+          html: "<div style='color:red;'>Failed to connect to the server.</div>",
+        },
+      ]);
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100">
-      {/* CHAT AREA */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.map((msg, idx) => (
+    <div style={styles.container}>
+      <div style={styles.chatBox}>
+        {chatHistory.map((msg, index) => (
           <div
-            key={idx}
-            className={`flex ${msg.isUser ? "justify-end" : "justify-start"}`}
+            key={index}
+            style={{
+              ...styles.messageWrapper,
+              justifyContent: msg.sender === "user" ? "flex-end" : "flex-start",
+            }}
           >
             <div
-              className={`
-                max-w-[85%] p-3 rounded-xl shadow
-                ${msg.isUser ? "bg-blue-600 text-white" : "bg-white text-gray-800"}
-              `}
+              style={{
+                ...styles.messageBubble,
+                backgroundColor: msg.sender === "user" ? "#007bff" : "#f8f9fa",
+                color: msg.sender === "user" ? "#fff" : "#333",
+                border: msg.sender === "user" ? "none" : "1px solid #e5e7eb",
+              }}
             >
-              {msg.isHtml ? (
-                <div
-                  className="chat-html overflow-x-auto"
-                  dangerouslySetInnerHTML={{ __html: msg.text }}
-                />
+              {/* IMPORTANT: We use dangerouslySetInnerHTML to render the HTML table from the backend */}
+              {msg.html ? (
+                <div dangerouslySetInnerHTML={{ __html: msg.html }} />
               ) : (
-                <div className="whitespace-pre-wrap">{msg.text}</div>
+                <div>{msg.text}</div>
               )}
             </div>
           </div>
         ))}
-        <div ref={messagesEndRef} />
+        {isLoading && (
+          <div
+            style={{ ...styles.messageWrapper, justifyContent: "flex-start" }}
+          >
+            <div
+              style={{
+                ...styles.messageBubble,
+                backgroundColor: "#f8f9fa",
+                color: "#666",
+              }}
+            >
+              Analizează datele...
+            </div>
+          </div>
+        )}
+        <div ref={chatEndRef} />
       </div>
 
-      {/* INPUT AREA */}
-      <div className="p-3 border-t bg-white flex gap-2">
+      <form onSubmit={handleSendMessage} style={styles.inputArea}>
         <input
-          className="flex-1 p-2 border rounded-lg focus:outline-none"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !loading && sendMessage()}
-          placeholder="Întrebare..."
-          disabled={loading}
+          type="text"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Întreabă ceva despre analize sau documente..."
+          style={styles.input}
+          disabled={isLoading}
         />
         <button
-          className="px-4 py-2 bg-green-600 text-white rounded-lg disabled:opacity-50"
-          onClick={sendMessage}
-          disabled={loading || !input.trim()}
+          type="submit"
+          style={styles.button}
+          disabled={isLoading || !message.trim()}
         >
           Trimite
         </button>
-      </div>
+      </form>
     </div>
   );
 }
+
+// Basic inline styling for a clean chat interface
+const styles = {
+  container: {
+    display: "flex",
+    flexDirection: "column",
+    height: "500px",
+    width: "100%",
+    maxWidth: "800px",
+    margin: "0 auto",
+    border: "1px solid #e5e7eb",
+    borderRadius: "12px",
+    backgroundColor: "#fff",
+    boxShadow: "0 4px 6px rgba(0, 0, 0, 0.05)",
+  },
+  chatBox: {
+    flex: 1,
+    padding: "16px",
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: "16px",
+  },
+  messageWrapper: {
+    display: "flex",
+    width: "100%",
+  },
+  messageBubble: {
+    maxWidth: "85%",
+    padding: "12px 16px",
+    borderRadius: "16px",
+    fontSize: "14px",
+    lineHeight: "1.5",
+    wordWrap: "break-word",
+    overflowX: "auto", // Allows the table to scroll horizontally if it's too wide
+  },
+  inputArea: {
+    display: "flex",
+    borderTop: "1px solid #e5e7eb",
+    padding: "12px",
+    gap: "12px",
+    backgroundColor: "#f9fafb",
+    borderBottomLeftRadius: "12px",
+    borderBottomRightRadius: "12px",
+  },
+  input: {
+    flex: 1,
+    padding: "12px 16px",
+    borderRadius: "24px",
+    border: "1px solid #d1d5db",
+    outline: "none",
+    fontSize: "14px",
+  },
+  button: {
+    padding: "10px 24px",
+    borderRadius: "24px",
+    border: "none",
+    backgroundColor: "#007bff",
+    color: "white",
+    cursor: "pointer",
+    fontWeight: "600",
+    transition: "background-color 0.2s",
+  },
+};
