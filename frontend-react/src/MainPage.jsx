@@ -1,78 +1,196 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Chat from "./Chat";
-import { UploadCloud } from "lucide-react";
+import {
+  UploadCloud,
+  Activity,
+  MessageSquare,
+  FileText,
+  Eye,
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 export default function MainPage({ isUploading, handleUpload, role }) {
+  const navigate = useNavigate();
+  const loggedIdentifier = localStorage.getItem("loggedIdentifier");
+
+  const [patientDocs, setPatientDocs] = useState([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+
+  // Fetch patient's documents automatically
+  useEffect(() => {
+    if (role !== "Practitioner" && loggedIdentifier) {
+      const fetchDocs = async () => {
+        setLoadingDocs(true);
+        try {
+          const res = await fetch(
+            `http://localhost:8080/api/documents/patient/${loggedIdentifier}`,
+          );
+          if (res.ok) {
+            const data = await res.json();
+            setPatientDocs(data);
+          }
+        } catch (e) {
+          console.error("Failed to fetch docs", e);
+        } finally {
+          setLoadingDocs(false);
+        }
+      };
+      fetchDocs();
+    }
+  }, [role, loggedIdentifier, isUploading]);
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-100 text-gray-900 font-sans">
-      {/* Header */}
-      <header className="w-full py-10 flex flex-col items-center">
-        <h1 className="text-4xl font-extrabold tracking-tight text-teal-700">
-          Health Graph AI
-        </h1>
-        <p className="text-sm text-gray-500 mt-2">
-          Upload medical documents and explore structured clinical graphs
-        </p>
-      </header>
+    <div className="min-h-[calc(100vh-73px)] bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-100 text-gray-900 font-sans flex flex-col">
+      {/* Main Layout Grid */}
+      <div className="flex-1 w-full max-w-7xl mx-auto px-4 py-8 sm:py-12 flex flex-col lg:flex-row gap-8 items-start lg:items-stretch">
+        {/* Left Column: Upload or Practitioner Docs */}
+        <div className="w-full lg:w-1/3 flex flex-col gap-6">
+          {/* Upload Section */}
+          {role !== "Practitioner" && (
+            <>
+              <div className="w-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 flex flex-col items-center hover:shadow-2xl transition">
+                <label
+                  className={`w-full flex items-center justify-center gap-3 bg-gradient-to-r from-teal-600 to-emerald-500 hover:from-teal-500 hover:to-emerald-400 text-white py-4 px-6 rounded-2xl font-semibold transition shadow-md ${
+                    isUploading
+                      ? "opacity-75 cursor-not-allowed"
+                      : "cursor-pointer"
+                  }`}
+                >
+                  <UploadCloud className="w-6 h-6" />
+                  <span>
+                    {isUploading
+                      ? "Se procesează cu AI..."
+                      : "Încarcă PDF Medical"}
+                  </span>
 
-      {/* Upload Section */}
-      {role !== "Practitioner" && (
-        <div className="px-4">
-          <div className="max-w-7xl mx-auto bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 sm:p-8 flex flex-col items-center hover:shadow-2xl transition">
-            <label className="w-full cursor-pointer flex flex-col items-center justify-center gap-3 bg-gradient-to-r from-teal-600 to-emerald-500 hover:from-teal-500 hover:to-emerald-400 text-white py-5 px-6 rounded-2xl font-semibold transition shadow-md">
-              <UploadCloud className="w-7 h-7" />
+                  <input
+                    type="file"
+                    accept=".pdf"
+                    className="hidden"
+                    disabled={isUploading}
+                    onChange={handleUpload}
+                  />
+                </label>
 
-              <span className="text-lg">
-                {isUploading ? "Processing AI..." : "Upload Medical PDF"}
-              </span>
+                <p className="text-sm text-gray-500 mt-4 text-center">
+                  AI extrage automat entități clinice din PDF și construiește
+                  graful medical.
+                </p>
 
-              <input
-                type="file"
-                accept=".pdf"
-                className="hidden"
-                disabled={isUploading}
-                onChange={handleUpload}
-              />
-            </label>
-
-            <p className="text-sm text-gray-500 mt-4 text-center max-w-md">
-              AI extracts clinical entities (Observations, Conditions,
-              Medications) and builds a structured health graph automatically.
-            </p>
-
-            {isUploading && (
-              <div className="mt-4 text-teal-600 text-sm animate-pulse">
-                Analyzing document...
+                {isUploading && (
+                  <div className="mt-4 text-teal-600 text-sm font-medium animate-pulse">
+                    Se analizează documentul...
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        </div>
-      )}
 
-      {/* CHAT SECTION (premium card style) */}
-      <main className="flex-1 flex items-center justify-center px-4 pb-12 mt-12">
-        <div className="w-full max-w-7xl">
-          <div className="rounded-3xl border border-white/40 bg-white/70 backdrop-blur-xl shadow-2xl overflow-hidden transition hover:shadow-3xl">
-            {/* Accent bar */}
-            <div className="h-1 w-full bg-gradient-to-r from-teal-400 via-emerald-400 to-sky-400" />
+              {/* Patient Documents List */}
+              <div className="w-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 flex flex-col hover:shadow-2xl transition">
+                <h3 className="text-lg font-bold text-teal-800 mb-4 flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-teal-600" />
+                  Documente Încărcate
+                </h3>
 
-            {/* Title strip (subtle improvement) */}
-            <div className="px-6 pt-5 pb-2">
-              <h2 className="text-lg font-semibold text-teal-700">
-                Health Graph Chat
-              </h2>
-              <p className="text-xs text-gray-500">
-                Ask questions about extracted medical data
+                {loadingDocs ? (
+                  <div className="text-sm text-teal-600 font-medium animate-pulse text-center py-6">
+                    Se încarcă documentele...
+                  </div>
+                ) : patientDocs.length === 0 ? (
+                  <div className="text-sm text-gray-500 text-center py-6">
+                    Niciun document încărcat încă.
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3 overflow-y-auto max-h-[300px] pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-teal-200 [&::-webkit-scrollbar-thumb]:rounded-full">
+                    {patientDocs.map((doc, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between p-3 bg-white/60 border border-teal-100 rounded-2xl shadow-sm hover:border-teal-300 hover:bg-white transition-all group"
+                      >
+                        <div className="flex flex-col overflow-hidden mr-3">
+                          <span className="text-sm font-bold text-gray-700 truncate group-hover:text-teal-700 transition-colors">
+                            {doc.name}
+                          </span>
+                          <span className="text-xs text-gray-500 font-medium mt-0.5">
+                            {doc.uploadDate
+                              ? new Date(doc.uploadDate).toLocaleDateString(
+                                  "ro-RO",
+                                )
+                              : "-"}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() =>
+                            window.open(
+                              `http://localhost:8080/api/documents/download/${doc.id}`,
+                              "_blank",
+                            )
+                          }
+                          className="p-2.5 bg-teal-50 text-teal-600 hover:bg-teal-500 hover:text-white rounded-xl transition-colors shrink-0 shadow-sm"
+                          title="Vezi PDF"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Documents Section for Practitioner */}
+          {role === "Practitioner" && (
+            <div className="w-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 flex flex-col items-center hover:shadow-2xl transition">
+              <button
+                onClick={() => navigate("/practitioner-documents")}
+                className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-500 hover:from-blue-500 hover:to-indigo-400 text-white py-4 px-6 rounded-2xl font-semibold transition shadow-md"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="w-6 h-6"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                  />
+                </svg>
+                Gestionează Documente Pacienți
+              </button>
+              <p className="text-sm text-gray-500 mt-4 text-center">
+                Vezi istoricul documentelor și fișierele PDF pentru pacienții
+                tăi.
               </p>
+            </div>
+          )}
+        </div>
+
+        {/* Right Column: CHAT SECTION */}
+        <main className="w-full lg:w-2/3 flex flex-col h-[600px] lg:h-[calc(100vh-11rem)]">
+          <div className="w-full h-full flex flex-col rounded-3xl border border-white/40 bg-white/70 backdrop-blur-xl shadow-2xl overflow-hidden transition hover:shadow-3xl">
+            {/* Chat Header */}
+            <div className="bg-gradient-to-r from-teal-600 via-emerald-500 to-sky-500 p-5 sm:px-6 flex items-center gap-4 text-white shadow-sm z-10">
+              <div className="p-2.5 bg-white/20 rounded-xl backdrop-blur-md border border-white/30 shadow-inner">
+                <MessageSquare className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold tracking-wide">
+                  Health Graph Assistant
+                </h2>
+              </div>
             </div>
 
             {/* Chat */}
-            <div className="p-4 sm:p-6 pt-2">
+            <div className="flex-1 p-4 sm:p-6 bg-gray-50/50 flex flex-col min-h-0">
               <Chat />
             </div>
           </div>
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

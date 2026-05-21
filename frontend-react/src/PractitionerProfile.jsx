@@ -1,5 +1,16 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  User,
+  Calendar,
+  MapPin,
+  Shield,
+  Edit2,
+  ArrowLeft,
+  Save,
+  X,
+  Activity,
+} from "lucide-react";
 
 export default function PractitionerProfile({ graphData }) {
   const loggedIdentifier = localStorage.getItem("loggedIdentifier");
@@ -116,120 +127,149 @@ export default function PractitionerProfile({ graphData }) {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-100 via-indigo-100 to-purple-100 text-gray-900 font-sans">
-      <div className="bg-white/90 p-10 rounded-3xl shadow-2xl w-96 border-2 border-indigo-400 flex flex-col items-center">
-        <div className="flex items-center gap-2 mb-4">
-          {/* Icoană specifică pentru medic (Cruce medicală/Plus) */}
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={1.5}
-            stroke="currentColor"
-            className="w-8 h-8 text-indigo-600"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M12 4.5v15m7.5-7.5h-15"
-            />
-          </svg>
+    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-100 flex flex-col items-center justify-start font-sans text-gray-900 pt-6 pb-12 px-4 sm:px-6">
+      <div className="w-full max-w-7xl">
+        <button
+          onClick={() => navigate("/")}
+          className="flex items-center gap-2 text-teal-700 hover:text-teal-900 font-semibold mb-6 transition"
+        >
+          <ArrowLeft className="w-5 h-5" /> Înapoi la Dashboard
+        </button>
+      </div>
+      <div className="w-full max-w-7xl bg-white/80 backdrop-blur-xl border border-white/40 shadow-2xl rounded-3xl overflow-hidden transition-all">
+        {/* Top Banner */}
+        <div className="h-20 bg-gradient-to-r from-indigo-500 to-blue-400"></div>
 
-          <h2 className="text-3xl font-extrabold text-center text-indigo-800">
-            Profil Medic
-          </h2>
-        </div>
+        <div className="px-6 sm:px-10 pb-10">
+          {/* Avatar & Header Profile Info */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end -mt-10 mb-8 gap-4 w-full">
+            <div className="flex flex-col sm:flex-row items-start sm:items-end gap-5 min-w-0 w-full sm:w-auto">
+              <div className="bg-white p-2 rounded-full shadow-lg shrink-0">
+                <div className="bg-gradient-to-br from-indigo-100 to-blue-100 text-indigo-600 p-5 rounded-full border border-indigo-200">
+                  <User className="w-12 h-12" />
+                </div>
+              </div>
+              <div className="mb-2 min-w-0 flex-1">
+                <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight break-words">
+                  {prefix}
+                  {firstName} {lastName}
+                </h2>
+                <p className="text-indigo-600 font-semibold flex items-center gap-1.5 mt-1">
+                  <Shield className="w-4 h-4" /> Licență/ID: {loggedIdentifier}
+                </p>
+              </div>
+            </div>
 
-        {/* Date Non-Editabile */}
-        <div className="w-full mb-2">
-          <span className="font-bold text-indigo-700">Nume:</span> {prefix}
-          {lastName}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-indigo-700">Prenume:</span>{" "}
-          {firstName}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-blue-700">Licență/ID:</span>{" "}
-          {loggedIdentifier}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-pink-700">Gen:</span> {gender}
-        </div>
-        <div className="w-full mb-6 border-b pb-4">
-          <span className="font-bold text-purple-700">Vârstă:</span> {age}
-        </div>
+            {/* Edit / Save Buttons */}
+            <div className="flex gap-3 w-full sm:w-auto mt-4 sm:mt-0">
+              {isEditing ? (
+                <>
+                  <button
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold transition"
+                    onClick={handleCancel}
+                    disabled={isSaving}
+                  >
+                    <X className="w-4 h-4" /> Anulează
+                  </button>
+                  <button
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-semibold shadow-md transition disabled:opacity-50"
+                    onClick={handleSave}
+                    disabled={isSaving}
+                  >
+                    <Save className="w-4 h-4" />{" "}
+                    {isSaving ? "Se salvează..." : "Salvează"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 bg-white/60 hover:bg-white text-indigo-700 border border-indigo-200 rounded-xl font-semibold transition shadow-sm"
+                  onClick={() => setIsEditing(true)}
+                >
+                  <Edit2 className="w-4 h-4" /> Editează Profilul
+                </button>
+              )}
+            </div>
+          </div>
 
-        {/* Date Editabile (pe care le vei schimba tu ulterior) */}
-        <div className="w-full mb-3 flex flex-col">
-          <label className="font-bold text-indigo-700 text-sm mb-1">
-            Județ Cabinet:
-          </label>
-          {isEditing ? (
-            <input
-              type="text"
-              value={judet}
-              onChange={(e) => setJudet(e.target.value)}
-              className="w-full px-3 py-2 border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Ex: Maramureș"
-            />
-          ) : (
-            <span className="text-gray-800">{judet || "-"}</span>
-          )}
-        </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {/* Date Biometrice */}
+            <div className="bg-gray-50/60 rounded-2xl p-6 border border-gray-100 shadow-sm">
+              <h3 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-2">
+                <Activity className="w-5 h-5 text-indigo-500" /> Date Biometrice
+              </h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Gen
+                  </label>
+                  <div className="text-gray-900 font-semibold mt-0.5 capitalize">
+                    {gender}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Data Nașterii
+                  </label>
+                  <div className="text-gray-900 font-semibold mt-0.5 flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-indigo-600" /> {birthDate}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Vârstă
+                  </label>
+                  <div className="text-gray-900 font-semibold mt-0.5">
+                    {age} ani
+                  </div>
+                </div>
+              </div>
+            </div>
 
-        <div className="w-full mb-6 flex flex-col">
-          <label className="font-bold text-indigo-700 text-sm mb-1">
-            Localitate Cabinet:
-          </label>
-          {isEditing ? (
-            <input
-              type="text"
-              value={localitate}
-              onChange={(e) => setLocalitate(e.target.value)}
-              className="w-full px-3 py-2 border border-indigo-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Ex: Baia Mare"
-            />
-          ) : (
-            <span className="text-gray-800">{localitate || "-"}</span>
-          )}
-        </div>
-
-        {/* Butoane condiționate */}
-        <div className="flex gap-4 w-full">
-          {isEditing ? (
-            <>
-              <button
-                className="flex-1 py-2 bg-gray-400 hover:bg-gray-500 text-white rounded-lg font-semibold shadow transition"
-                onClick={handleCancel}
-                disabled={isSaving}
-              >
-                Anulează
-              </button>
-              <button
-                className="flex-1 py-2 bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 text-white rounded-lg font-semibold shadow transition disabled:opacity-50"
-                onClick={handleSave}
-                disabled={isSaving}
-              >
-                {isSaving ? "Se salvează..." : "Salvează"}
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="flex-1 py-2 bg-gradient-to-r from-indigo-400 to-blue-400 hover:from-indigo-500 hover:to-blue-500 text-white rounded-lg font-semibold shadow transition"
-                onClick={() => navigate("/")}
-              >
-                Înapoi
-              </button>
-              <button
-                className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold shadow transition"
-                onClick={() => setIsEditing(true)}
-              >
-                Editează
-              </button>
-            </>
-          )}
+            {/* Domiciliu (Editabil) */}
+            <div className="bg-gray-50/60 rounded-2xl p-6 border border-gray-100 shadow-sm">
+              <h3 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-indigo-500" /> Cabinet
+              </h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Județ
+                  </label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      value={judet}
+                      onChange={(e) => setJudet(e.target.value)}
+                      className="mt-1 w-full px-4 py-2.5 border border-indigo-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white transition"
+                      placeholder="Ex: Maramureș"
+                    />
+                  ) : (
+                    <div className="text-gray-900 font-semibold mt-0.5">
+                      {judet || "Necompletat"}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Localitate
+                  </label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      value={localitate}
+                      onChange={(e) => setLocalitate(e.target.value)}
+                      className="mt-1 w-full px-4 py-2.5 border border-indigo-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white transition"
+                      placeholder="Ex: Baia Mare"
+                    />
+                  ) : (
+                    <div className="text-gray-900 font-semibold mt-0.5">
+                      {localitate || "Necompletat"}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

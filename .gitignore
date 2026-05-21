@@ -10,3 +10,5 @@ frontend-react/dist/
 .vscode/
 .idea/
 .DS_Store
+
+backend-java/uploads/

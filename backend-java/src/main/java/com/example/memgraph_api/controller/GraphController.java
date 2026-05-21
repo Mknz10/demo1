@@ -1,5 +1,9 @@
 package com.example.memgraph_api.controller;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.List;
 import java.util.Map; // Make sure this is imported!
 
@@ -45,6 +49,17 @@ public class GraphController {
                 + ", identifier: " + identifier);
 
         try {
+            // 1. Create the uploads directory if it doesn't exist
+            Path uploadDir = Paths.get("uploads");
+            if (!Files.exists(uploadDir)) {
+                Files.createDirectories(uploadDir);
+            }
+            
+            // 2. Save the physical file to the disk
+            String fileName = file.getOriginalFilename();
+            Path filePath = uploadDir.resolve(fileName);
+            Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
+
             llmExtractionService.processPdfAndStore(file, identifier);
             return ResponseEntity.ok("File processed and graph updated successfully!");
         } catch (Exception e) {

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { Send, Bot } from "lucide-react";
 
 export default function Chat() {
   const [message, setMessage] = useState("");
@@ -79,132 +80,70 @@ export default function Chat() {
   };
 
   return (
-    <div style={styles.container}>
-      <div style={styles.chatBox}>
+    <div className="flex flex-col h-full w-full bg-transparent min-h-0">
+      {/* Chat Messages Area */}
+      <div className="flex-1 overflow-y-auto p-2 sm:p-4 space-y-6 scroll-smooth">
         {chatHistory.map((msg, index) => (
           <div
             key={index}
-            style={{
-              ...styles.messageWrapper,
-              justifyContent: msg.sender === "user" ? "flex-end" : "flex-start",
-            }}
+            className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
           >
             <div
-              style={{
-                ...styles.messageBubble,
-                backgroundColor: msg.sender === "user" ? "#007bff" : "#f8f9fa",
-                color: msg.sender === "user" ? "#fff" : "#333",
-                border: msg.sender === "user" ? "none" : "1px solid #e5e7eb",
-              }}
+              className={`px-5 py-3 max-w-[90%] sm:max-w-[80%] shadow-sm overflow-x-auto ${
+                msg.sender === "user"
+                  ? "bg-gradient-to-br from-teal-500 to-emerald-500 text-white rounded-2xl rounded-tr-sm"
+                  : "bg-white text-gray-800 border border-gray-100 rounded-2xl rounded-tl-sm"
+              }`}
             >
               {/* IMPORTANT: We use dangerouslySetInnerHTML to render the HTML table from the backend */}
               {msg.html ? (
-                <div dangerouslySetInnerHTML={{ __html: msg.html }} />
+                <div
+                  className="prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: msg.html }}
+                />
               ) : (
-                <div>{msg.text}</div>
+                <div className="leading-relaxed">{msg.text}</div>
               )}
             </div>
           </div>
         ))}
+
         {isLoading && (
-          <div
-            style={{ ...styles.messageWrapper, justifyContent: "flex-start" }}
-          >
-            <div
-              style={{
-                ...styles.messageBubble,
-                backgroundColor: "#f8f9fa",
-                color: "#666",
-              }}
-            >
-              Analizează datele...
+          <div className="flex justify-start">
+            <div className="bg-white text-gray-500 border border-gray-100 rounded-2xl rounded-tl-sm px-5 py-4 max-w-[85%] shadow-sm flex items-center gap-3">
+              <Bot className="w-5 h-5 animate-bounce text-teal-500" />
+              <div className="flex gap-1.5">
+                <span className="w-2 h-2 bg-teal-400 rounded-full animate-pulse"></span>
+                <span className="w-2 h-2 bg-teal-400 rounded-full animate-pulse delay-75"></span>
+                <span className="w-2 h-2 bg-teal-400 rounded-full animate-pulse delay-150"></span>
+              </div>
             </div>
           </div>
         )}
         <div ref={chatEndRef} />
       </div>
 
-      <form onSubmit={handleSendMessage} style={styles.inputArea}>
+      {/* Input Area */}
+      <form
+        onSubmit={handleSendMessage}
+        className="relative mt-2 sm:mt-4 flex items-center"
+      >
         <input
           type="text"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Întreabă ceva despre analize sau documente..."
-          style={styles.input}
+          className="w-full pl-5 pr-14 py-4 bg-white border border-teal-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-teal-500 shadow-sm transition-all text-gray-700 placeholder:text-gray-400"
           disabled={isLoading}
         />
         <button
           type="submit"
-          style={styles.button}
+          className="absolute right-2 p-2.5 bg-teal-500 hover:bg-teal-600 text-white rounded-xl transition-all disabled:opacity-50 disabled:hover:bg-teal-500 shadow-md group"
           disabled={isLoading || !message.trim()}
         >
-          Trimite
+          <Send className="w-5 h-5 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
         </button>
       </form>
     </div>
   );
 }
-
-// Basic inline styling for a clean chat interface
-const styles = {
-  container: {
-    display: "flex",
-    flexDirection: "column",
-    height: "500px",
-    width: "100%",
-    maxWidth: "800px",
-    margin: "0 auto",
-    border: "1px solid #e5e7eb",
-    borderRadius: "12px",
-    backgroundColor: "#fff",
-    boxShadow: "0 4px 6px rgba(0, 0, 0, 0.05)",
-  },
-  chatBox: {
-    flex: 1,
-    padding: "16px",
-    overflowY: "auto",
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-  },
-  messageWrapper: {
-    display: "flex",
-    width: "100%",
-  },
-  messageBubble: {
-    maxWidth: "85%",
-    padding: "12px 16px",
-    borderRadius: "16px",
-    fontSize: "14px",
-    lineHeight: "1.5",
-    wordWrap: "break-word",
-    overflowX: "auto", // Allows the table to scroll horizontally if it's too wide
-  },
-  inputArea: {
-    display: "flex",
-    borderTop: "1px solid #e5e7eb",
-    padding: "12px",
-    gap: "12px",
-    backgroundColor: "#f9fafb",
-    borderBottomLeftRadius: "12px",
-    borderBottomRightRadius: "12px",
-  },
-  input: {
-    flex: 1,
-    padding: "12px 16px",
-    borderRadius: "24px",
-    border: "1px solid #d1d5db",
-    outline: "none",
-    fontSize: "14px",
-  },
-  button: {
-    padding: "10px 24px",
-    borderRadius: "24px",
-    border: "none",
-    backgroundColor: "#007bff",
-    color: "white",
-    cursor: "pointer",
-    fontWeight: "600",
-    transition: "background-color 0.2s",
-  },
-};

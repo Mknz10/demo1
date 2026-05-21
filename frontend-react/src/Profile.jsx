@@ -1,5 +1,16 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  User,
+  Calendar,
+  MapPin,
+  Shield,
+  Edit2,
+  ArrowLeft,
+  Save,
+  X,
+  Activity,
+} from "lucide-react";
 
 export default function Profile({ graphData }) {
   // Debug log to help diagnose missing data
@@ -158,150 +169,177 @@ export default function Profile({ graphData }) {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-green-100 via-teal-100 to-blue-100 text-gray-900 font-sans">
-      <div className="bg-white/90 p-10 rounded-3xl shadow-2xl w-96 border-2 border-teal-400 flex flex-col items-center">
-        <div className="flex items-center gap-2 mb-4">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 24 24"
-            strokeWidth={1.5}
-            stroke="currentColor"
-            className="w-8 h-8 text-red-500"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M12 6v6l4 2"
-            />
-            <circle
-              cx="12"
-              cy="12"
-              r="9"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              fill="none"
-            />
-          </svg>
-          <h2 className="text-3xl font-extrabold text-center text-teal-700">
-            Profil pacient
-          </h2>
-        </div>
+    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-100 flex flex-col items-center justify-start font-sans text-gray-900 pt-6 pb-12 px-4 sm:px-6">
+      <div className="w-full max-w-7xl">
+        <button
+          onClick={() => navigate("/")}
+          className="flex items-center gap-2 text-teal-700 hover:text-teal-900 font-semibold mb-6 transition"
+        >
+          <ArrowLeft className="w-5 h-5" /> Înapoi la Dashboard
+        </button>
+      </div>
+      <div className="w-full max-w-7xl bg-white/80 backdrop-blur-xl border border-white/40 shadow-2xl rounded-3xl overflow-hidden transition-all">
+        {/* Top Banner */}
+        <div className="h-20 bg-gradient-to-r from-teal-500 to-emerald-400"></div>
 
-        {/* Date Non-Editabile */}
-        <div className="w-full mb-2">
-          <span className="font-bold text-green-700">Nume:</span> {lastName}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-green-700">Prenume:</span> {firstName}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-blue-700">Identifier:</span>{" "}
-          {loggedIdentifier}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-pink-700">Gen:</span> {gender}
-        </div>
-        <div className="w-full mb-2">
-          <span className="font-bold text-indigo-700">Data nașterii:</span>{" "}
-          {birthDate}
-        </div>
-        <div className="w-full mb-6 border-b pb-4">
-          <span className="font-bold text-purple-700">Vârstă:</span> {age}
-        </div>
+        <div className="px-6 sm:px-10 pb-10">
+          {/* Avatar & Header Profile Info */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end -mt-10 mb-8 gap-4">
+            <div className="flex items-end gap-5">
+              <div className="bg-white p-2 rounded-full shadow-lg">
+                <div className="bg-gradient-to-br from-teal-100 to-emerald-100 text-teal-600 p-5 rounded-full border border-teal-200">
+                  <User className="w-12 h-12" />
+                </div>
+              </div>
+              <div className="mb-2">
+                <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight">
+                  {firstName} {lastName}
+                </h2>
+                <p className="text-teal-600 font-semibold flex items-center gap-1.5 mt-1">
+                  <Shield className="w-4 h-4" /> ID: {loggedIdentifier}
+                </p>
+              </div>
+            </div>
 
-        {/* Date Editabile (Domiciliu) */}
-        <div className="w-full mb-3 flex flex-col">
-          <label className="font-bold text-teal-700 text-sm mb-1">Județ:</label>
-          {isEditing ? (
-            <input
-              type="text"
-              value={judet}
-              onChange={(e) => setJudet(e.target.value)}
-              className="w-full px-3 py-2 border border-teal-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500"
-              placeholder="Ex: Maramureș"
-            />
-          ) : (
-            <span className="text-gray-800">{judet || "-"}</span>
-          )}
-        </div>
+            {/* Edit / Save Buttons */}
+            <div className="flex gap-3 w-full sm:w-auto mt-4 sm:mt-0">
+              {isEditing ? (
+                <>
+                  <button
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-semibold transition"
+                    onClick={handleCancel}
+                    disabled={isSaving}
+                  >
+                    <X className="w-4 h-4" /> Anulează
+                  </button>
+                  <button
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl font-semibold shadow-md transition disabled:opacity-50"
+                    onClick={handleSave}
+                    disabled={isSaving}
+                  >
+                    <Save className="w-4 h-4" />{" "}
+                    {isSaving ? "Se salvează..." : "Salvează"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 bg-white/60 hover:bg-white text-teal-700 border border-teal-200 rounded-xl font-semibold transition shadow-sm"
+                  onClick={() => setIsEditing(true)}
+                >
+                  <Edit2 className="w-4 h-4" /> Editează Profilul
+                </button>
+              )}
+            </div>
+          </div>
 
-        <div className="w-full mb-6 flex flex-col">
-          <label className="font-bold text-teal-700 text-sm mb-1">
-            Localitate:
-          </label>
-          {isEditing ? (
-            <input
-              type="text"
-              value={localitate}
-              onChange={(e) => setLocalitate(e.target.value)}
-              className="w-full px-3 py-2 border border-teal-300 rounded focus:outline-none focus:ring-2 focus:ring-teal-500"
-              placeholder="Ex: Baia Mare"
-            />
-          ) : (
-            <span className="text-gray-800">{localitate || "-"}</span>
-          )}
-        </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {/* Date Biometrice */}
+            <div className="bg-gray-50/60 rounded-2xl p-6 border border-gray-100 shadow-sm">
+              <h3 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-2">
+                <Activity className="w-5 h-5 text-teal-500" /> Date Biometrice
+              </h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Gen
+                  </label>
+                  <div className="text-gray-900 font-semibold mt-0.5 capitalize">
+                    {gender}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Data Nașterii
+                  </label>
+                  <div className="text-gray-900 font-semibold mt-0.5 flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-teal-600" /> {birthDate}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Vârstă
+                  </label>
+                  <div className="text-gray-900 font-semibold mt-0.5">
+                    {age} ani
+                  </div>
+                </div>
+              </div>
+            </div>
 
-        {/* Toggle Acces Doctor */}
-        <div className="w-full mb-6 p-4 border border-teal-200 rounded-xl bg-teal-50 flex flex-col items-center">
-          <h3 className="font-bold text-teal-800 mb-2">Permisiuni Doctor</h3>
-          <p className="text-sm text-teal-600 mb-4 text-center">
-            Alegeți dacă medicul dumneavoastră are permisiunea de a vizualiza
-            dosarul.
-          </p>
-          <button
-            onClick={handleToggleAccess}
-            disabled={isToggling}
-            className={`px-4 py-2 rounded-lg font-bold text-white shadow transition-all ${
-              accessEnabled
-                ? "bg-red-500 hover:bg-red-600"
-                : "bg-green-500 hover:bg-green-600"
-            } disabled:opacity-50`}
-          >
-            {isToggling
-              ? "Se actualizează..."
-              : accessEnabled
-                ? "Revocă Accesul"
-                : "Permite Accesul"}
-          </button>
-        </div>
+            {/* Domiciliu (Editabil) */}
+            <div className="bg-gray-50/60 rounded-2xl p-6 border border-gray-100 shadow-sm">
+              <h3 className="text-lg font-bold text-gray-800 mb-5 flex items-center gap-2">
+                <MapPin className="w-5 h-5 text-teal-500" /> Domiciliu
+              </h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Județ
+                  </label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      value={judet}
+                      onChange={(e) => setJudet(e.target.value)}
+                      className="mt-1 w-full px-4 py-2.5 border border-teal-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white transition"
+                      placeholder="Ex: Maramureș"
+                    />
+                  ) : (
+                    <div className="text-gray-900 font-semibold mt-0.5">
+                      {judet || "Necompletat"}
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-500">
+                    Localitate
+                  </label>
+                  {isEditing ? (
+                    <input
+                      type="text"
+                      value={localitate}
+                      onChange={(e) => setLocalitate(e.target.value)}
+                      className="mt-1 w-full px-4 py-2.5 border border-teal-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white transition"
+                      placeholder="Ex: Baia Mare"
+                    />
+                  ) : (
+                    <div className="text-gray-900 font-semibold mt-0.5">
+                      {localitate || "Necompletat"}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
 
-        {/* Butoane condiționate */}
-        <div className="flex gap-4 w-full">
-          {isEditing ? (
-            <>
-              <button
-                className="flex-1 py-2 bg-gray-400 hover:bg-gray-500 text-white rounded-lg font-semibold shadow transition"
-                onClick={handleCancel}
-                disabled={isSaving}
-              >
-                Anulează
-              </button>
-              <button
-                className="flex-1 py-2 bg-gradient-to-r from-teal-500 to-green-500 hover:from-teal-600 hover:to-green-600 text-white rounded-lg font-semibold shadow transition disabled:opacity-50"
-                onClick={handleSave}
-                disabled={isSaving}
-              >
-                {isSaving ? "Se salvează..." : "Salvează"}
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="flex-1 py-2 bg-gradient-to-r from-teal-500 to-green-400 hover:from-teal-600 hover:to-green-500 text-white rounded-lg font-semibold shadow transition"
-                onClick={() => navigate("/")}
-              >
-                Înapoi
-              </button>
-              <button
-                className="flex-1 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg font-semibold shadow transition"
-                onClick={() => setIsEditing(true)}
-              >
-                Editează
-              </button>
-            </>
-          )}
+          {/* Secțiune Acces Medic */}
+          <div className="mt-8 bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-6 shadow-sm">
+            <div>
+              <h3 className="text-lg font-bold text-teal-900 flex items-center gap-2 mb-1">
+                <Shield className="w-5 h-5 text-teal-600" /> Permisiuni Dosar
+                Medical
+              </h3>
+              <p className="text-teal-700 text-sm">
+                Gestionează dreptul medicului de a vizualiza analizele și
+                istoricul tău medical.
+              </p>
+            </div>
+            <button
+              onClick={handleToggleAccess}
+              disabled={isToggling}
+              className={`px-6 py-3 rounded-xl font-bold text-white shadow-md transition-all whitespace-nowrap min-w-[180px] ${
+                accessEnabled
+                  ? "bg-rose-500 hover:bg-rose-600"
+                  : "bg-emerald-500 hover:bg-emerald-600"
+              } disabled:opacity-50`}
+            >
+              {isToggling
+                ? "Se actualizează..."
+                : accessEnabled
+                  ? "Revocă Accesul"
+                  : "Permite Accesul"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

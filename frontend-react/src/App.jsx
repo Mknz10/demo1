@@ -7,6 +7,7 @@ import Header from "./Header";
 import MainPage from "./MainPage";
 import Register from "./Register";
 import Chat from "./Chat";
+import PractitionerDocuments from "./PractitionerDocuments";
 
 export default function App() {
   const navigate = useNavigate();
@@ -195,6 +196,17 @@ export default function App() {
               <PractitionerProfile graphData={graphData} />
             ) : (
               <Navigate to="/profile" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/practitioner-documents"
+          element={
+            isPractitioner ? (
+              <PractitionerDocuments />
+            ) : (
+              <Navigate to="/" replace />
             )
           }
         />
