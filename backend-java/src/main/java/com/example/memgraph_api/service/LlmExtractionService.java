@@ -27,13 +27,14 @@ public class LlmExtractionService {
         String extractedText;
         String fileName = file.getOriginalFilename();
         LocalDate uploadDate = LocalDate.now();
-        // For demo, releaseDate is not extracted from file, but could be passed as a param or parsed from content
-        LocalDate releaseDate = uploadDate; // TODO: parse from file if available
 
         try (PDDocument document = PDDocument.load(file.getInputStream())) {
             PDFTextStripper stripper = new PDFTextStripper();
             extractedText = stripper.getText(document);
         }
+
+        LocalDate parsedDate = extractDateFromText(extractedText);
+        LocalDate releaseDate = parsedDate != null ? parsedDate : uploadDate;
 
         // 1. Create Document node Cypher
         String docId = identifier + "_" + uploadDate.toString() + "_" + fileName;
@@ -167,6 +168,45 @@ public class LlmExtractionService {
                 session.run(linkToDocument);
             }
         }
+    }
+
+    private LocalDate extractDateFromText(String text) {
+        if (text == null) return null;
+        
+        // Căutăm date calendaristice precedate de cuvinte cheie specifice (ex: Data emiterii, Data recoltării, Date)
+        java.util.regex.Pattern keywordPattern = java.util.regex.Pattern.compile(
+            "(?i)(?:data|date|emis|eliberat|recoltat)[\\s:A-Za-zăîâșțĂÎÂȘȚ]*(\\d{2}[./-]\\d{2}[./-]\\d{4}|\\d{4}-\\d{2}-\\d{2})"
+        );
+        java.util.regex.Matcher keywordMatcher = keywordPattern.matcher(text);
+        
+        String dateStr = null;
+        if (keywordMatcher.find()) {
+            dateStr = keywordMatcher.group(1);
+        } else {
+            // Fallback: prima dată calendaristică validă găsită în text (ex. dacă lipsește cuvântul cheie)
+            java.util.regex.Pattern fallbackPattern = java.util.regex.Pattern.compile("\\b(\\d{2}[./-]\\d{2}[./-]\\d{4}|\\d{4}-\\d{2}-\\d{2})\\b");
+            java.util.regex.Matcher fallbackMatcher = fallbackPattern.matcher(text);
+            if (fallbackMatcher.find()) {
+                dateStr = fallbackMatcher.group(1);
+            }
+        }
+
+        if (dateStr != null) {
+            try {
+                if (dateStr.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                    return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+                } else if (dateStr.contains(".")) {
+                    return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy"));
+                } else if (dateStr.contains("/")) {
+                    return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+                } else if (dateStr.contains("-")) {
+                    return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("dd-MM-yyyy"));
+                }
+            } catch (Exception e) {
+                // Ignorăm erorile de parsare
+            }
+        }
+        return null;
     }
 }
         
