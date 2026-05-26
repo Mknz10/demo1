@@ -8,6 +8,7 @@ import org.neo4j.driver.Driver;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -24,11 +25,13 @@ public class ChatController {
 
     private final ChatClient chatClient;
     private final Driver driver;
+    private final EmbeddingModel embeddingModel;
 
     @Autowired
-    public ChatController(ChatClient.Builder chatClientBuilder, Driver driver) {
+    public ChatController(ChatClient.Builder chatClientBuilder, Driver driver, EmbeddingModel embeddingModel) {
         this.chatClient = chatClientBuilder.build();
         this.driver = driver;
+        this.embeddingModel = embeddingModel;
     }
 
     @PostMapping(
@@ -67,229 +70,143 @@ public class ChatController {
                 ? "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)" 
                 : "MATCH (p:Patient {identifier: '" + identifier + "'})";
 
-// =====================================================
-            // 2. DOCUMENT SEARCH & RELATION HANDLING
+            // =====================================================
+            // 2. PREGĂTIRE CONTEXT PENTRU RAG
             // =====================================================
             String msgLower = message.toLowerCase();
-            
-            // If the user explicitly asks for a file/document, handle it securely.
-            if (msgLower.contains("document") || msgLower.contains("file") || msgLower.contains("fișier")) {
-                
-                String fileName = null;
-                String docId = null;
-                
-                try {
-                    java.util.regex.Matcher mName = java.util.regex.Pattern.compile("(?:file|document|fișier)[^\\w\\d]*([\\w\\-. ]+\\.pdf)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(message);
-                    if (mName.find()) fileName = mName.group(1).trim();
-                    
-                    java.util.regex.Matcher mId = java.util.regex.Pattern.compile("id[: ]+([\\w\\-]+)", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(message);
-                    if (mId.find()) docId = mId.group(1).trim();
-                } catch (Exception e) {
-                    // ignore extraction errors
-                }
-
-                String cypher = null;
-
-                if (fileName != null || docId != null) {
-                    // FIX 1: Tie the document to the specific patient to prevent data leaks.
-                    // FIX 2: Return primitive properties, NOT full nodes.
-                    String matchDoc = docId != null ? "{id: '" + docId + "'}" : "{name: '" + fileName + "'}";
-                    if (isPractitioner) {
-                        cypher = "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document " + matchDoc + ") " +
-                                 "RETURN labels(n)[0] AS ResourceType, n.display AS Display, n.code AS Code, n.valueQuantity_value AS Value, d.name AS DocumentName LIMIT 50";
-                    } else {
-                        cypher = "MATCH (p:Patient {identifier: '" + identifier + "'})<-[:subject]-(n)-[:source]->(d:Document " + matchDoc + ") " +
-                                 "RETURN labels(n)[0] AS ResourceType, n.display AS Display, n.code AS Code, n.valueQuantity_value AS Value, d.name AS DocumentName LIMIT 50";
-                    }
-                } else {
-                    // FIX 3: Secure the fallback query to only show THIS patient's documents.
-                    // Assuming documents are connected to resources which point to the patient.
-                    if (isPractitioner) {
-                        cypher = "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " +
-                                 "WHERE d.name IS NOT NULL " +
-                                 "RETURN DISTINCT d.name AS Name, p.identifier AS PatientID, d.uploadDate AS UploadDate, d.releaseDate AS ReleaseDate, d.id AS ID " +
-                                 "ORDER BY d.uploadDate DESC LIMIT 20";
-                    } else {
-                        cypher = "MATCH (p:Patient {identifier: '" + identifier + "'})<-[:subject]-(n)-[:source]->(d:Document) " +
-                                 "WHERE d.name IS NOT NULL " +
-                                 "RETURN DISTINCT d.name AS Name, d.uploadDate AS UploadDate, d.releaseDate AS ReleaseDate, d.id AS ID " +
-                                 "ORDER BY d.uploadDate DESC LIMIT 20";
-                    }
-                }
-
-                // Execute the safe, property-based query
-                List<Map<String, Object>> rows = new ArrayList<>();
-                List<String> columns;
-                try (Session session = driver.session()) {
-                    Result result = session.run(cypher);
-                    columns = result.keys();
-                    while (result.hasNext()) {
-                        rows.add(result.next().asMap());
-                    }
-                }
-                return ResponseEntity.ok(Map.of(
-                        "reply_html", buildHtml(cypher, columns, rows)
-                ));
-            }
-
-            // =====================================================
-            // 3. BUILD STRICT CYPHER PROMPT
-            // =====================================================
-            String ruleText = isPractitioner ?
-                "- You are a Practitioner's assistant. You MUST ONLY query data for patients connected via a `:TREATS` relationship.\n" +
-                "- ALWAYS start your query with exactly:\n  " + baseMatch + "\n" +
-                "- If the user asks about a specific person by name (e.g., 'Andreea'), you MUST filter by their name.\n" +
-                "- To filter by name, use `WHERE p.name[0].given[0] CONTAINS 'Andreea'` for first name or `WHERE p.name[0].family CONTAINS 'Popescu'` for last name.\n"
-                :
-                "- You are a Patient's assistant. You can ONLY see your own data.\n" +
-                "- ALWAYS start your query with exactly:\n  " + baseMatch + "\n" +
-                "- NEVER search for other patients by name.\n";
-
-            String practitionerNameExample = isPractitioner ?
-                "Find medications for a patient named 'Andreea':\n" +
-                baseMatch + " WHERE p.name[0].given[0] CONTAINS 'Andreea'\n" +
-                "MATCH (m:MedicationRequest)-[:subject]->(p)\n" +
-                "RETURN m.display AS Medication, m.dosageInstruction_text AS Dose, p.name[0].given[0] AS PatientFirstName, p.identifier AS PatientID\n\n"
-                : "";
-            String patientNameExample =
-                "Find the current patient's name (nume pacient):\n" +
-                baseMatch + "\n" +
-                "RETURN p.name[0].given[0] AS GivenName, p.name[0].family AS FamilyName, p.identifier AS Identifier\n\n";
-
-            String schemaPrompt =
-                "You are a Cypher expert for a medical Memgraph database.\n" +
-                "You generate ONLY READ-ONLY Cypher queries.\n\n" +
-
-                "HARD RULES:\n" +
-                ruleText +
-                "- NEVER output explanations or text\n" +
-                "- Output ONLY Cypher starting with MATCH\n" +
-                "- NEVER use CREATE, MERGE, DELETE, SET, DROP\n\n" +
-
-                "CRITICAL RELATIONSHIP RULE:\n" +
-                "- All clinical resources ALWAYS point TO patient\n" +
-                "- Correct direction:\n" +
-                "  (Resource)-[:subject]->(p:Patient)\n" +
-                "- NEVER use (p)-[:subject]->(Resource)\n\n" +
-
-                "SCHEMA:\n" +
-                "- Observation(code, system, display, valueQuantity_value, valueQuantity_unit, valueBoolean, valueString, documentId)\n" +
-                "- Condition(code, system, display, documentId)\n" +
-                "- MedicationRequest(code, system, display, dosageInstruction_text, documentId)\n" +
-                "- Procedure(code, system, display, documentId)\n\n" +
-                "- Practitioner(name, gender, birthDate)\n" +
-
-                "RELATIONSHIP MODEL:\n" +
-                "(Observation|Condition|MedicationRequest|Procedure)-[:subject]->(p:Patient)\n\n" +
-                "(Practitioner)-[:TREATS]->(Patient)\n" +
-
-                "RETURN RULES (VERY IMPORTANT):\n" +
-                "- NEVER return full nodes (NO: RETURN r, RETURN o, RETURN c)\n" +
-                "- ALWAYS return properties only\n" +
-                "- ALWAYS alias fields for readability\n" +
-                "- Example correct return:\n" +
-                "  RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n\n" +
-
-                "EXAMPLES:\n" +
-                practitionerNameExample +
-                patientNameExample +
-
-                "Observations:\n" +
-                baseMatch + "\n" +
-                "MATCH (o:Observation)-[:subject]->(p)\n" +
-                "RETURN o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n\n" +
-
-                "Conditions:\n" +
-                baseMatch + "\n" +
-                "MATCH (c:Condition)-[:subject]->(p)\n" +
-                "RETURN c.display AS display, c.code AS code, c.system AS system, c.documentId AS documentId\n\n" +
-
-                "MedicationRequests:\n" +
-                baseMatch + "\n" +
-                "MATCH (m:MedicationRequest)-[:subject]->(p)\n" +
-                "RETURN m.display AS display, m.code AS code, m.dosageInstruction_text AS dose, m.documentId AS documentId\n\n" +
-
-                "Procedures:\n" +
-                baseMatch + "\n" +
-                "MATCH (pr:Procedure)-[:subject]->(p)\n" +
-                "RETURN pr.display AS display, pr.code AS code, pr.documentId AS documentId\n\n" +
-
-                "Practitioners:\n" +
-                baseMatch + "\n" +
-                "MATCH (prac:Practitioner)-[:TREATS]->(p)\n" +
-                "RETURN prac.name AS name, prac.identifier AS identifier, prac.gender AS gender, prac.birthDate AS birthDate\n\n" +
-
-                "USER QUESTION:\n" +
-                message;
-
-            // =====================================================
-            // 3. CALL LLM
-            // =====================================================
-            String cypher;
             List<Map<String, Object>> rows = new ArrayList<>();
             List<String> columns = new ArrayList<>();
-            boolean fallback = false;
-            try {
-                cypher = chatClient.prompt()
-                        .user(schemaPrompt)
-                        .call()
-                        .content();
-            } catch (Exception e) {
-                // fallback on LLM error
-                fallback = true;
-                cypher = null;
-            }
-
-            if (cypher == null || cypher.isBlank() || !isValidCypher(cleanCypher(cypher)) || isDangerous(cleanCypher(cypher))) {
-                fallback = true;
-            }
-
-            if (!fallback) {
-                // Try to execute the generated Cypher
-                cypher = cleanCypher(cypher);
-                try (Session session = driver.session()) {
-                    Result result = session.run(cypher);
-                    columns = result.keys();
-                    while (result.hasNext()) {
-                        rows.add(result.next().asMap());
+            StringBuilder contextBuilder = new StringBuilder();
+            String tableTitle = "Căutare Vectorială Semantică";
+            boolean skipSemantic = false;
+            
+            if (msgLower.contains("document") || msgLower.contains("file") || msgLower.contains("fișier") || msgLower.contains("pdf")) {
+                
+                String fileName = null;
+                // Extragem numele imediat după cuvântul "document", omițând semnele de punctuație
+                java.util.regex.Matcher mName = java.util.regex.Pattern.compile("(?i)(?:file|documentul?|fișierul?|pdf[-ul ]*)\\s+([^?.,!]+)").matcher(message);
+                if (mName.find()) {
+                    fileName = mName.group(1).trim();
+                    // Ignorăm cuvintele generice care nu reprezintă fișiere efective
+                    if (fileName.equalsIgnoreCase("meu") || fileName.equalsIgnoreCase("medical") || fileName.equalsIgnoreCase("mele") || fileName.length() < 3) {
+                        fileName = null;
                     }
-                } catch (Exception e) {
-                    // fallback on Cypher execution error (e.g., syntax)
-                    fallback = true;
                 }
-            }
 
-            // If fallback is needed or no results, show all observations and medications
-            if (fallback || rows.isEmpty()) {
-                // Try to show all observations and medications for the patient
-                String fallbackCypher = "CALL {\n" +
-                        "  " + baseMatch + "\n" +
-                        "  MATCH (o:Observation)-[:subject]->(p)\n" +
-                        "  RETURN 'Observation' AS type, o.display AS display, o.code AS code, o.valueQuantity_value AS value, o.valueQuantity_unit AS unit, o.documentId AS documentId\n" +
-                        "  UNION\n" +
-                        "  " + baseMatch + "\n" +
-                        "  MATCH (m:MedicationRequest)-[:subject]->(p)\n" +
-                        "  RETURN 'Medication' AS type, m.display AS display, m.code AS code, m.dosageInstruction_text AS value, '' AS unit, m.documentId AS documentId\n" +
-                        "}\nRETURN type, display, code, value, unit, documentId";
-                cypher = fallbackCypher;
-                rows = new ArrayList<>();
-                columns = new ArrayList<>();
-                try (Session session = driver.session()) {
-                    Result result = session.run(cypher);
-                    columns = result.keys();
-                    while (result.hasNext()) {
-                        rows.add(result.next().asMap());
+                if (fileName != null) {
+                    // Căutare explicită a conținutului unui document pentru a-l oferi AI-ului
+                    String cypher = isPractitioner ?
+                        "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " :
+                        "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) ";
+                    cypher += "WHERE toLower(d.name) = toLower($fileName) OR toLower(d.name) = toLower($fileName) + '.pdf' " +
+                              "RETURN d.name AS Document, labels(n)[0] AS Type, n.display AS Display, n.valueQuantity_value AS Value, n.valueQuantity_unit AS Unit, n.dosageInstruction_text AS Dose " +
+                              "LIMIT 200";
+
+                    try (Session session = driver.session()) {
+                        Result result = session.run(cypher, Map.of("id", identifier, "fileName", fileName));
+                        columns = result.keys();
+                        while (result.hasNext()) {
+                            Map<String, Object> row = result.next().asMap();
+                            rows.add(row);
+                            contextBuilder.append(row.toString()).append("\n");
+                        }
+                    } catch (Exception e) {
+                        return ResponseEntity.ok(Map.of("reply_html", "<div>Eroare la extragerea documentului: " + e.getMessage() + "</div>"));
                     }
-                } catch (Exception e) {
+
+                    if (!rows.isEmpty()) {
+                        skipSemantic = true; // Sărim peste căutarea generală, ne concentrăm pe document!
+                        tableTitle = "Extragere din: " + fileName;
+                    }
+                }
+                
+                // Dacă nu s-a găsit un fișier specific dar utilizatorul vrea de fapt doar o listă
+                if (!skipSemantic && (msgLower.contains("lista") || msgLower.contains("ce documente") || msgLower.contains("arată") || msgLower.contains("toate") || msgLower.contains("documente"))) {
+                    String cypher = isPractitioner ?
+                        "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " +
+                        "WHERE d.name IS NOT NULL " +
+                        "RETURN DISTINCT d.name AS Nume, p.identifier AS Pacient, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
+                        "ORDER BY `Data încărcării` DESC LIMIT 20" :
+                        "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) " +
+                        "WHERE d.name IS NOT NULL " +
+                        "RETURN DISTINCT d.name AS Nume, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
+                        "ORDER BY `Data încărcării` DESC LIMIT 20";
+
+                    List<Map<String, Object>> docRows = new ArrayList<>();
+                    List<String> docCols;
+                    try (Session session = driver.session()) {
+                        Result result = session.run(cypher, Map.of("id", identifier));
+                        docCols = result.keys();
+                        while (result.hasNext()) {
+                            docRows.add(result.next().asMap());
+                        }
+                    }
                     return ResponseEntity.ok(Map.of(
-                            "reply_html", "<div>Server error: " + e.getMessage() + "</div>"
+                            "reply_html", "<div>Iată lista documentelor tale:</div>" + buildHtml("Lista Documentelor Medicale", docCols, docRows)
                     ));
                 }
             }
 
-            return ResponseEntity.ok(Map.of(
-                    "reply_html", buildHtml(cypher, columns, rows)
-            ));
+            // =====================================================
+            // 3. CĂUTARE SEMANTICĂ (Dacă nu s-a cerut un document anume)
+            // =====================================================
+            if (!skipSemantic) {
+                float[] primitiveVector = embeddingModel.embed(message);
+                List<Double> queryVector = new ArrayList<>(primitiveVector.length);
+                for (float v : primitiveVector) {
+                    queryVector.add((double) v);
+                }
+                
+                String semanticCypher = isPractitioner ?
+                    "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " :
+                    "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) ";
+                    
+                semanticCypher += 
+                    "WHERE d.embedding IS NOT NULL AND size(d.embedding) = size($queryVector) " +
+                    "WITH d, n, reduce(dot=0.0, i IN range(0, size(d.embedding)-1) | dot + d.embedding[i]*$queryVector[i]) AS sim " +
+                    "ORDER BY sim DESC " +
+                    "LIMIT 300 " +
+                    "RETURN d.name AS Document, labels(n)[0] AS Type, n.display AS Display, n.valueQuantity_value AS Value, n.valueQuantity_unit AS Unit, n.dosageInstruction_text AS Dose, sim AS Similarity";
+
+                try (Session session = driver.session()) {
+                    Result result = session.run(semanticCypher, Map.of(
+                            "id", identifier,
+                            "queryVector", queryVector
+                    ));
+                    columns = result.keys();
+                    while (result.hasNext()) {
+                        Map<String, Object> row = result.next().asMap();
+                        rows.add(row);
+                        contextBuilder.append(row.toString()).append("\n");
+                    }
+                } catch (Exception e) {
+                    return ResponseEntity.ok(Map.of("reply_html", "<div>Eroare la baza de date grafică: " + e.getMessage() + "</div>"));
+                }
+            }
+
+            // Trecem datele extrase înapoi prin LLM pentru a compune un răspuns conversațional (RAG)
+            String aiResponse = "";
+            if (!rows.isEmpty()) {
+                String ragPrompt = "Ești un asistent medical AI. Răspunde la întrebarea utilizatorului într-o propoziție, folosind STRICT datele de mai jos extrase prin căutare semantică din dosarul său medical.\n" +
+                                   "Fii concis, clar, nu inventa date și la final recomandă un consult medical.\n\n" +
+                                   "DATE MEDICALE GĂSITE:\n" + contextBuilder.toString() + "\n\n" +
+                                   "ÎNTREBARE: " + message;
+                try {
+                    aiResponse = chatClient.prompt().user(ragPrompt).call().content();
+                } catch (Exception e) {
+                    aiResponse = "Iată ce am găsit în dosarul tău medical în legătură cu căutarea ta.";
+                }
+            } else {
+                aiResponse = "Nu am găsit informații în dosarul medical referitor la această căutare.";
+            }
+
+            // Întoarcem răspunsul de la AI, alături de tabelul referințelor pentru afișare
+            String finalHtml = "<div style='margin-bottom:15px; font-size:14px; line-height:1.5; color:#222;'>" + aiResponse + "</div>";
+            if (!rows.isEmpty()) {
+                finalHtml += buildHtml(tableTitle, columns, rows);
+            }
+
+            return ResponseEntity.ok(Map.of("reply_html", finalHtml));
 
         } catch (Exception e) {
             return ResponseEntity.ok(Map.of(
@@ -369,38 +286,40 @@ public class ChatController {
     // =====================================================
     // HTML OUTPUT
     // =====================================================
-    private String buildHtml(String cypher,
+    private String buildHtml(String title,
                          List<String> columns,
                          List<Map<String, Object>> rows) {
 
     StringBuilder html = new StringBuilder();
 
-    // Card wrapper (chat-friendly)
+    // Details wrapper (collapsible accordion)
     html.append("""
-        <div style="
+        <details style="
             background:#ffffff;
             border-radius:12px;
             padding:12px;
             box-shadow:0 2px 8px rgba(0,0,0,0.08);
             max-width:100%;
-            overflow-x:auto;
             font-family:Arial;
+            margin-top:10px;
         ">
+        <summary style="
+            cursor:pointer;
+            color:#0f766e;
+            font-weight:bold;
+            font-size:14px;
+            outline:none;
+            user-select:none;
+        ">
+            📊 Afișează tabelul cu datele extrase
+        </summary>
+        <div style="margin-top:12px; overflow-x:auto;">
     """);
 
-    // Cypher block
-    html.append("""
-        <div style="font-size:12px;color:#666;margin-bottom:8px;">
-            <b>Cypher generat:</b>
-        </div>
-        <pre style="
-            background:#f6f6f6;
-            padding:8px;
-            border-radius:8px;
-            font-size:12px;
-            overflow-x:auto;
-        ">
-    """).append(cypher).append("</pre>");
+    // Title block
+    html.append("<div style='font-size:12px;color:#666;margin-bottom:8px;'><b>")
+        .append(title)
+        .append("</b></div>");
 
     // Empty state
     if (rows.isEmpty()) {
@@ -409,13 +328,13 @@ public class ChatController {
                 Nu s-au găsit rezultate.
             </div>
         </div>
+        </details>
         """);
         return html.toString();
     }
 
     // Table wrapper for scrolling
     html.append("""
-        <div style="margin-top:10px; overflow-x:auto;">
         <table style="
             border-collapse:collapse;
             width:100%;
@@ -466,7 +385,7 @@ public class ChatController {
         </tbody>
         </table>
         </div>
-        </div>
+        </details>
     """);
 
     return html.toString();

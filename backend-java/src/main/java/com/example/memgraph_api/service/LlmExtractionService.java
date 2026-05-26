@@ -1,7 +1,9 @@
 package com.example.memgraph_api.service;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -9,6 +11,7 @@ import org.apache.pdfbox.text.PDFTextStripper;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -17,10 +20,12 @@ public class LlmExtractionService {
 
     private final ChatClient chatClient;
     private final Driver driver;
+    private final EmbeddingModel embeddingModel;
 
-    public LlmExtractionService(ChatClient.Builder chatClientBuilder, Driver driver) {
+    public LlmExtractionService(ChatClient.Builder chatClientBuilder, Driver driver, EmbeddingModel embeddingModel) {
         this.chatClient = chatClientBuilder.build();
         this.driver = driver;
+        this.embeddingModel = embeddingModel;
     }
 
     public void processPdfAndStore(MultipartFile file, String identifier) throws Exception {
@@ -36,13 +41,22 @@ public class LlmExtractionService {
         LocalDate parsedDate = extractDateFromText(extractedText);
         LocalDate releaseDate = parsedDate != null ? parsedDate : uploadDate;
 
-        // 1. Create Document node Cypher
+        // 1. Generare vector de context (Embedding) pentru document
+        // Limităm textul la 20k caractere pentru a nu depăși contextul maxim acceptat de OpenAI
+        String textForEmbedding = extractedText.length() > 20000 ? extractedText.substring(0, 20000) : extractedText;
+        float[] primitiveVector = embeddingModel.embed(textForEmbedding);
+        List<Double> embeddingVector = new ArrayList<>(primitiveVector.length);
+        for (float v : primitiveVector) {
+            embeddingVector.add((double) v);
+        }
+
+        // 2. Create Document node Cypher
         String docId = identifier + "_" + uploadDate.toString() + "_" + fileName;
         String docName = fileName;
         String createDocumentCypher = "MERGE (d:Document {id: $docId}) " +
-            "SET d.name = $docName, d.uploadDate = $uploadDate, d.releaseDate = $releaseDate";
+            "SET d.name = $docName, d.uploadDate = $uploadDate, d.releaseDate = $releaseDate, d.embedding = $embeddingVector";
 
-        // 2. Formulate the prompt for the LLM, include the identifier and docId for user isolation
+        // 3. Formulate the prompt for the LLM, include the identifier and docId for user isolation
         String systemPrompt =
             "You are a medical informatics expert. Extract structured clinical data into Memgraph Cypher that is fully FHIR-aligned.\n\n" +
             "CRITICAL RULES:\n" +
@@ -100,8 +114,12 @@ public class LlmExtractionService {
             "10. DOCUMENT LINKING (NEW):\n" +
             "Every extracted node (Condition, Observation, MedicationRequest, Procedure) MUST have a relationship to the Document node like this: (n)-[:source]->(d) where d:Document.\n" +
             "Use the Document node with id: '" + docId + "'.\n\n" +
+            "11. EXHAUSTIVE EXTRACTION (CRITICAL):\n" +
+            "You MUST NOT skip any clinical data, especially lab results.\n" +
+            "If you see a list of blood tests, urinalysis or observations (e.g., Neutrofile, Limfocite, INR, Eozinofile, Glicemie), you MUST create a separate Observation node for EVERY SINGLE line item.\n" +
+            "Do not summarize or skip anything to save space. Be 100% exhaustive.\n\n" +
             "Medical Notes:\n" + extractedText;
-
+            
         // 3. Ask the LLM to generate Cypher
         String cypherQueries = chatClient.prompt()
             .user(systemPrompt)
@@ -124,6 +142,7 @@ public class LlmExtractionService {
         docParams.put("docName", docName);
         docParams.put("uploadDate", uploadDate.toString());
         docParams.put("releaseDate", releaseDate.toString());
+        docParams.put("embeddingVector", embeddingVector);
 
         try (Session session = driver.session()) {
             
