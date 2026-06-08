@@ -65,10 +65,44 @@ public class ChatController {
                 ));
             }
 
+            // =====================================================
+            // 1.5. EXTRAGERE DATE PERSONALE PENTRU CONTEXT (Cine sunt?)
+            // =====================================================
+            String userInfo = "Informații personale indisponibile.";
+            try (Session session = driver.session()) {
+                Result res = session.run(
+                    "MATCH (u) WHERE u.id = $id RETURN labels(u)[0] AS role, u.name AS name, u.name_family AS family, u.name_given AS given, u.gender AS gen, u.birthDate AS nastere",
+                    Map.of("id", identifier)
+                );
+                if (res.hasNext()) {
+                    var rec = res.next();
+                    String roleFromDb = rec.get("role").asString();
+                    
+                    String uName = "Pacient";
+                    if (!rec.get("name").isNull()) {
+                        uName = rec.get("name").asString();
+                    } else if (!rec.get("family").isNull() && !rec.get("given").isNull()) {
+                        List<Object> givenList = rec.get("given").asList();
+                        String givenName = givenList.isEmpty() ? "" : givenList.get(0).toString();
+                        uName = givenName + " " + rec.get("family").asString();
+                    }
+                    
+                    if ("Patient".equals(roleFromDb)) {
+                        String uGen = rec.get("gen").isNull() ? "Necunoscut" : rec.get("gen").asString();
+                        String uNastere = rec.get("nastere").isNull() ? "Necunoscut" : rec.get("nastere").asString();
+                        userInfo = "Nume: " + uName + " | Gen: " + uGen + " | Data Nașterii: " + uNastere;
+                    } else {
+                        userInfo = "Nume (Medic): " + uName;
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Eroare la extragerea datelor personale: " + e.getMessage());
+            }
+
             boolean isPractitioner = "Practitioner".equals(role);
             String baseMatch = isPractitioner 
-                ? "MATCH (:Practitioner {identifier: '" + identifier + "'})-[:TREATS]->(p:Patient)" 
-                : "MATCH (p:Patient {identifier: '" + identifier + "'})";
+                ? "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient) WHERE pr.id = '" + identifier + "'" 
+                : "MATCH (p:Patient) WHERE p.id = '" + identifier + "'";
 
             // =====================================================
             // 2. PREGĂTIRE CONTEXT PENTRU RAG
@@ -78,126 +112,208 @@ public class ChatController {
             List<String> columns = new ArrayList<>();
             StringBuilder contextBuilder = new StringBuilder();
             String tableTitle = "Căutare Vectorială Semantică";
-            boolean skipSemantic = false;
             
+            // Verificăm dacă utilizatorul dorește o listă a documentelor
+            boolean listDocsIntent = msgLower.matches(".*\\b(lista|arat[aă]|toate|ce documente)\\b.*") && msgLower.contains("document");
+            
+            if (listDocsIntent) {
+                String cypher = isPractitioner ?
+                    "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id " +
+                    "AND d.name IS NOT NULL " +
+                    "RETURN DISTINCT d.name AS Nume, p.id AS Pacient, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
+                    "ORDER BY `Data încărcării` DESC LIMIT 20" :
+                    "MATCH (p:Patient)-[]->(n)-[:source]->(d:Document) WHERE p.id = $id " +
+                    "AND d.name IS NOT NULL " +
+                    "RETURN DISTINCT d.name AS Nume, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
+                    "ORDER BY `Data încărcării` DESC LIMIT 20";
+
+                List<Map<String, Object>> docRows = new ArrayList<>();
+                List<String> docCols;
+                try (Session session = driver.session()) {
+                    Result result = session.run(cypher, Map.of("id", identifier));
+                    docCols = result.keys();
+                    while (result.hasNext()) {
+                        docRows.add(result.next().asMap());
+                    }
+                }
+                return ResponseEntity.ok(Map.of(
+                        "reply_html", "<div>Iată lista documentelor tale:</div>" + buildHtml("Lista Documentelor Medicale", docCols, docRows)
+                ));
+            }
+
+            // Detectăm dacă a fost solicitat un document anume
+            String targetDocId = null;
+            String targetDocName = null;
+
             if (msgLower.contains("document") || msgLower.contains("file") || msgLower.contains("fișier") || msgLower.contains("pdf")) {
-                
-                String fileName = null;
-                // Extragem numele imediat după cuvântul "document", omițând semnele de punctuație
-                java.util.regex.Matcher mName = java.util.regex.Pattern.compile("(?i)(?:file|documentul?|fișierul?|pdf[-ul ]*)\\s+([^?.,!]+)").matcher(message);
-                if (mName.find()) {
-                    fileName = mName.group(1).trim();
-                    // Ignorăm cuvintele generice care nu reprezintă fișiere efective
-                    if (fileName.equalsIgnoreCase("meu") || fileName.equalsIgnoreCase("medical") || fileName.equalsIgnoreCase("mele") || fileName.length() < 3) {
-                        fileName = null;
-                    }
-                }
+                try (Session session = driver.session()) {
+                    String docQuery = isPractitioner ?
+                        "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id RETURN DISTINCT d.id AS docId, d.name AS docName" :
+                        "MATCH (p:Patient)-[]->(n)-[:source]->(d:Document) WHERE p.id = $id RETURN DISTINCT d.id AS docId, d.name AS docName";
 
-                if (fileName != null) {
-                    // Căutare explicită a conținutului unui document pentru a-l oferi AI-ului
-                    String cypher = isPractitioner ?
-                        "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " :
-                        "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) ";
-                    cypher += "WHERE toLower(d.name) = toLower($fileName) OR toLower(d.name) = toLower($fileName) + '.pdf' " +
-                              "RETURN d.name AS Document, labels(n)[0] AS Type, n.display AS Display, n.valueQuantity_value AS Value, n.valueQuantity_unit AS Unit, n.dosageInstruction_text AS Dose " +
-                              "LIMIT 200";
+                    Result docRes = session.run(docQuery, Map.of("id", identifier));
+                    while (docRes.hasNext()) {
+                        var record = docRes.next();
+                        String dName = record.get("docName").asString();
+                        String dId = record.get("docId").asString();
 
-                    try (Session session = driver.session()) {
-                        Result result = session.run(cypher, Map.of("id", identifier, "fileName", fileName));
-                        columns = result.keys();
-                        while (result.hasNext()) {
-                            Map<String, Object> row = result.next().asMap();
-                            rows.add(row);
-                            contextBuilder.append(row.toString()).append("\n");
-                        }
-                    } catch (Exception e) {
-                        return ResponseEntity.ok(Map.of("reply_html", "<div>Eroare la extragerea documentului: " + e.getMessage() + "</div>"));
-                    }
+                        String dNameLower = dName.toLowerCase();
+                        String dNameNoExt = dNameLower.replaceAll("\\.(pdf|jpg|png|jpeg)$", "").trim();
 
-                    if (!rows.isEmpty()) {
-                        skipSemantic = true; // Sărim peste căutarea generală, ne concentrăm pe document!
-                        tableTitle = "Extragere din: " + fileName;
-                    }
-                }
-                
-                // Dacă nu s-a găsit un fișier specific dar utilizatorul vrea de fapt doar o listă
-                if (!skipSemantic && (msgLower.contains("lista") || msgLower.contains("ce documente") || msgLower.contains("arată") || msgLower.contains("toate") || msgLower.contains("documente"))) {
-                    String cypher = isPractitioner ?
-                        "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " +
-                        "WHERE d.name IS NOT NULL " +
-                        "RETURN DISTINCT d.name AS Nume, p.identifier AS Pacient, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
-                        "ORDER BY `Data încărcării` DESC LIMIT 20" :
-                        "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) " +
-                        "WHERE d.name IS NOT NULL " +
-                        "RETURN DISTINCT d.name AS Nume, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
-                        "ORDER BY `Data încărcării` DESC LIMIT 20";
-
-                    List<Map<String, Object>> docRows = new ArrayList<>();
-                    List<String> docCols;
-                    try (Session session = driver.session()) {
-                        Result result = session.run(cypher, Map.of("id", identifier));
-                        docCols = result.keys();
-                        while (result.hasNext()) {
-                            docRows.add(result.next().asMap());
+                        if (msgLower.contains(dNameLower) || msgLower.contains(dNameNoExt)) {
+                            targetDocId = dId;
+                            targetDocName = dName;
+                            break;
                         }
                     }
-                    return ResponseEntity.ok(Map.of(
-                            "reply_html", "<div>Iată lista documentelor tale:</div>" + buildHtml("Lista Documentelor Medicale", docCols, docRows)
-                    ));
                 }
             }
 
             // =====================================================
-            // 3. CĂUTARE SEMANTICĂ (Dacă nu s-a cerut un document anume)
+            // 3. EXTRAGERE DATE DOSAR (Compatibil MIMIC-IV)
             // =====================================================
-            if (!skipSemantic) {
-                float[] primitiveVector = embeddingModel.embed(message);
-                List<Double> queryVector = new ArrayList<>(primitiveVector.length);
-                for (float v : primitiveVector) {
-                    queryVector.add((double) v);
-                }
-                
-                String semanticCypher = isPractitioner ?
-                    "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " :
-                    "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) ";
-                    
-                semanticCypher += 
-                    "WHERE d.embedding IS NOT NULL AND size(d.embedding) = size($queryVector) " +
-                    "WITH d, n, reduce(dot=0.0, i IN range(0, size(d.embedding)-1) | dot + d.embedding[i]*$queryVector[i]) AS sim " +
-                    "ORDER BY sim DESC " +
-                    "LIMIT 300 " +
-                    "RETURN d.name AS Document, labels(n)[0] AS Type, n.display AS Display, n.valueQuantity_value AS Value, n.valueQuantity_unit AS Unit, n.dosageInstruction_text AS Dose, sim AS Similarity";
+            boolean isCategorySpecific = false;
+            String filterLabels = "['Condition', 'ConditionED', 'Medication', 'MedicationAdministration', 'MedicationAdministrationICU', 'MedicationDispense', 'MedicationDispenseED', 'MedicationMix', 'MedicationRequest', 'MedicationStatementED', 'Observation', 'ObservationChartevents', 'ObservationDatetimeevents', 'ObservationED', 'ObservationLabevents', 'ObservationMicroOrg', 'ObservationMicroSusc', 'ObservationMicroTest', 'ObservationOutputevents', 'ObservationVitalSignsED', 'Procedure', 'ProcedureED', 'ProcedureICU']";
+            
+            if (msgLower.contains("medicament") || msgLower.contains("tratament") || msgLower.contains("pastil") || msgLower.contains("reteta") || msgLower.contains("rețetă")) {
+                filterLabels = "['Medication', 'MedicationAdministration', 'MedicationAdministrationICU', 'MedicationDispense', 'MedicationDispenseED', 'MedicationMix', 'MedicationRequest', 'MedicationStatementED']";
+                isCategorySpecific = true;
+            } else if (msgLower.contains("analiz") || msgLower.contains("laborator") || msgLower.contains("rezultat") || msgLower.contains("test")) {
+                filterLabels = "['Observation', 'ObservationChartevents', 'ObservationDatetimeevents', 'ObservationED', 'ObservationLabevents', 'ObservationMicroOrg', 'ObservationMicroSusc', 'ObservationMicroTest', 'ObservationOutputevents', 'ObservationVitalSignsED']";
+                isCategorySpecific = true;
+            } else if (msgLower.contains("diagnostic") || msgLower.contains("boal") || msgLower.contains("afecțiun") || msgLower.contains("afectiun")) {
+                filterLabels = "['Condition', 'ConditionED']";
+                isCategorySpecific = true;
+            } else if (msgLower.contains("procedur") || msgLower.contains("operati") || msgLower.contains("operați") || msgLower.contains("interventi") || msgLower.contains("intervenți")) {
+                filterLabels = "['Procedure', 'ProcedureED', 'ProcedureICU']";
+                isCategorySpecific = true;
+            } else if (msgLower.matches("(?i).*\\b(cine sunt|cum mă cheamă|câți ani am|vârsta mea|datele mele)\\b.*")) {
+                filterLabels = "[]"; 
+                isCategorySpecific = true;
+            }
 
-                try (Session session = driver.session()) {
-                    Result result = session.run(semanticCypher, Map.of(
-                            "id", identifier,
-                            "queryVector", queryVector
-                    ));
-                    columns = result.keys();
-                    while (result.hasNext()) {
-                        Map<String, Object> row = result.next().asMap();
-                        rows.add(row);
-                        contextBuilder.append(row.toString()).append("\n");
-                    }
-                } catch (Exception e) {
-                    return ResponseEntity.ok(Map.of("reply_html", "<div>Eroare la baza de date grafică: " + e.getMessage() + "</div>"));
+            String dbCypher = isPractitioner ?
+                "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient) WHERE pr.id = $id \n" :
+                "MATCH (p:Patient) WHERE p.id = $id \n";
+
+            Map<String, Object> queryParams = new java.util.HashMap<>();
+            queryParams.put("id", identifier);
+
+            if (targetDocId != null) {
+                dbCypher += "MATCH (p)-[]->(n)-[:source]->(d:Document {id: $docId}) \n";
+                queryParams.put("docId", targetDocId);
+                queryParams.put("docName", targetDocName);
+                tableTitle = "Extragere din: " + targetDocName;
+            } else {
+                dbCypher += "MATCH (p)-[]->(n) \n";
+            }
+
+            dbCypher += "WHERE labels(n)[0] IN " + filterLabels + " AND n.name IS NOT NULL AND NOT n.name CONTAINS 'Generic' \n";
+            dbCypher += "WITH labels(n)[0] AS Type, n.name AS Name, collect(n)[0] AS node \n";
+
+            if (targetDocId != null) {
+                dbCypher += "RETURN Type, node.name AS Nume, $docName AS Document \n";
+            } else {
+                dbCypher += "RETURN Type, node.name AS Nume \n";
+            }
+            dbCypher += "LIMIT 200";
+
+            try (Session session = driver.session()) {
+                Result result = session.run(dbCypher, queryParams);
+                columns = new ArrayList<>(result.keys());
+                columns.add("Potrivire Semantică");
+                while (result.hasNext()) {
+                    Map<String, Object> row = new java.util.HashMap<>(result.next().asMap());
+                    rows.add(row);
                 }
+            } catch (Exception e) {
+                return ResponseEntity.ok(Map.of("reply_html", "<div>Eroare la extragerea datelor: " + e.getMessage() + "</div>"));
+            }
+
+            // =====================================================
+            // CALCUL POTRIVIRE SEMANTICĂ (COSINE SIMILARITY)
+            // =====================================================
+            if (!rows.isEmpty()) {
+                float[] queryEmbedding = null;
+                try {
+                    queryEmbedding = embeddingModel.embed(message);
+                } catch (Exception e) {
+                    System.err.println("Eroare la generarea vectorului pentru întrebare: " + e.getMessage());
+                }
+
+                List<Map<String, Object>> filteredRows = new ArrayList<>();
+                for (Map<String, Object> row : rows) {
+                    String nume = (String) row.get("Nume");
+                    if (queryEmbedding != null && nume != null) {
+                        try {
+                            float[] numeEmbedding = embeddingModel.embed(nume);
+                            double sim = cosineSimilarity(queryEmbedding, numeEmbedding);
+                            int percent = (int) Math.round(sim * 100);
+                            
+                            // Dacă s-a cerut o categorie anume sau un document anume, bypassăm pragul minim. Altfel e 45%.
+                            int threshold = (targetDocId != null || isCategorySpecific) ? 0 : 45;
+                            
+                            if (percent >= threshold) {
+                                row.put("Potrivire Semantică", percent + "%");
+                                row.put("scoreRaw", sim);
+                                filteredRows.add(row);
+                            }
+                        } catch (Exception e) {
+                            row.put("Potrivire Semantică", "N/A");
+                            row.put("scoreRaw", 0.0);
+                            filteredRows.add(row);
+                        }
+                    } else {
+                        row.put("Potrivire Semantică", "N/A");
+                        row.put("scoreRaw", 0.0);
+                        filteredRows.add(row);
+                    }
+                }
+                rows = filteredRows;
+
+                // Sortăm descrescător tabelul după scorul de potrivire
+                rows.sort((r1, r2) -> Double.compare(
+                        (Double) r2.getOrDefault("scoreRaw", 0.0),
+                        (Double) r1.getOrDefault("scoreRaw", 0.0)
+                ));
+
+                // Construim textul pentru LLM punând primele cele mai relevante date
+                contextBuilder.setLength(0);
+                for (Map<String, Object> row : rows) {
+                    row.remove("scoreRaw"); // Ștergem valoarea tehnică să nu deruteze LLM-ul
+                    contextBuilder.append(row.toString()).append("\n");
+                }
+            } else if (targetDocId != null) {
+                return ResponseEntity.ok(Map.of("reply_html", 
+                    "<div style='margin-bottom:15px; font-size:14px; line-height:1.5; color:#222;'>" +
+                    "Nu am găsit informații în categoria solicitată pentru documentul <b>" + targetDocName + "</b>. " +
+                    "Încearcă o altă formulare sau verifică lista de documente.</div>"
+                ));
             }
 
             // Trecem datele extrase înapoi prin LLM pentru a compune un răspuns conversațional (RAG)
             String aiResponse = "";
-            if (!rows.isEmpty()) {
-                String ragPrompt = "Ești un asistent medical AI. Răspunde la întrebarea utilizatorului într-o propoziție, folosind STRICT datele de mai jos extrase prin căutare semantică din dosarul său medical.\n" +
-                                   "Fii concis, clar, nu inventa date și la final recomandă un consult medical.\n\n" +
-                                   "DATE MEDICALE GĂSITE:\n" + contextBuilder.toString() + "\n\n" +
-                                   "ÎNTREBARE: " + message;
-                try {
-                    aiResponse = chatClient.prompt().user(ragPrompt).call().content();
-                } catch (Exception e) {
-                    aiResponse = "Iată ce am găsit în dosarul tău medical în legătură cu căutarea ta.";
-                }
-            } else {
-                aiResponse = "Nu am găsit informații în dosarul medical referitor la această căutare.";
+            String ragPrompt = "";
+
+            String contextData = contextBuilder.toString();
+            // Protect against payload size limits (Groq 400 Bad Request error)
+            if (contextData.length() > 15000) {
+                contextData = contextData.substring(0, 15000) + "\n... [DATE TRUNCHIATE DIN CAUZA LIMITELOR DE DIMENSIUNE] ...";
+            }
+
+            ragPrompt = "Ești un asistent medical AI profesionist și empatic. Fii concis, dar natural și prietenos în exprimare.\n" +
+                               "Dacă utilizatorul pune întrebări personale (ex: cine sunt, vârsta mea), răspunde folosind exclusiv DATELE PERSONALE.\n" +
+                               "Dacă pune întrebări medicale, răspunde clar și direct la întrebare (ex: 'Da, în dosar apar menționate...', 'Nu am găsit informații despre...').\n" +
+                               "Afișează informațiile medicale cu liniuțe. NU menționa procentajele de 'Potrivire Semantică' sau ID-urile tehnice în răspunsul tău text.\n" +
+                               "Dacă o informație lipsește, explică frumos că nu există în dosar. Recomandă un consult la final.\n\n" +
+                               "DATELE PERSONALE ALE UTILIZATORULUI:\n" + userInfo + "\n\n" +
+                               "DATE MEDICALE GĂSITE:\n" + (rows.isEmpty() ? "Nicio informație medicală extrasă." : contextData) + "\n\n" +
+                               "ÎNTREBARE: " + message;
+            try {
+                aiResponse = chatClient.prompt().user(ragPrompt).call().content();
+            } catch (Exception e) {
+                System.err.println("Eroare la generarea răspunsului AI: " + e.getMessage());
+                aiResponse = "Iată ce am găsit în dosarul tău medical în legătură cu căutarea ta.";
             }
 
             // Întoarcem răspunsul de la AI, alături de tabelul referințelor pentru afișare
@@ -221,7 +337,7 @@ public class ChatController {
     private String getUserRole(String identifier) {
         try (Session session = driver.session()) {
             Result result = session.run(
-                    "MATCH (u {identifier: $id}) WHERE u:Patient OR u:Practitioner RETURN labels(u)[0] AS role LIMIT 1",
+                    "MATCH (u) WHERE u.id = $id AND (u:Patient OR u:Practitioner) RETURN labels(u)[0] AS role LIMIT 1",
                     Map.of("id", identifier)
             );
             if (result.hasNext()) {
@@ -390,4 +506,53 @@ public class ChatController {
 
     return html.toString();
 }
+
+    // =====================================================
+    // HTML OUTPUT PENTRU "CUM GÂNDEȘTE AI-UL"
+    // =====================================================
+    private String buildAiThinkingHtml(String prompt) {
+        // Evităm erorile de renderizare HTML pentru caractere speciale
+        String safePrompt = prompt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>");
+        return """
+            <details style="
+                background:#f8fafc;
+                border-radius:12px;
+                padding:12px;
+                border: 1px solid #e2e8f0;
+                max-width:100%;
+                font-family:Arial;
+                margin-top:10px;
+            ">
+            <summary style="
+                cursor:pointer;
+                color:#475569;
+                font-weight:bold;
+                font-size:14px;
+                outline:none;
+                user-select:none;
+            ">
+                🧠 Cum gândește AI-ul (Prompt & Context)
+            </summary>
+            <div style="margin-top:12px; font-size:12px; color:#334155; font-family:monospace; background:#f1f5f9; padding:10px; border-radius:8px; overflow-x:auto; max-height:400px; overflow-y:auto;">
+                """ + safePrompt + """
+            </div>
+            </details>
+        """;
+    }
+
+    // =====================================================
+    // UTILS: Calcul Matematic Similaritate Vectorială
+    // =====================================================
+    private double cosineSimilarity(float[] vectorA, float[] vectorB) {
+        double dotProduct = 0.0;
+        double normA = 0.0;
+        double normB = 0.0;
+        for (int i = 0; i < vectorA.length; i++) {
+            dotProduct += vectorA[i] * vectorB[i];
+            normA += Math.pow(vectorA[i], 2);
+            normB += Math.pow(vectorB[i], 2);
+        }
+        if (normA == 0.0 || normB == 0.0) return 0.0;
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
 }

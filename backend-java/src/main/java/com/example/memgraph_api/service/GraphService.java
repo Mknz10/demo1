@@ -5,9 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
-import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
@@ -19,16 +17,17 @@ import com.example.memgraph_api.model.Node;
 @Service
 public class GraphService {
 
-    private final Driver driver = GraphDatabase.driver(
-            "bolt://localhost:7687",
-            AuthTokens.none()
-    );
+    private final Driver driver;
+
+    public GraphService(Driver driver) {
+        this.driver = driver;
+    }
 
     // ================= UPDATE PATIENT =================
     public boolean updatePatientDomiciliu(String identifier, String judet, String localitate) {
 
         String cypher =
-                "MATCH (p:Patient {identifier: $identifier}) " +
+                "MATCH (p:Patient) WHERE p.id = $identifier " +
                 "SET p.judet = $judet, p.localitate = $localitate " +
                 "RETURN p";
 
@@ -52,8 +51,9 @@ public class GraphService {
     (identifier != null && !identifier.isEmpty())
         ? "MATCH (p) " +
           "WHERE (p:Patient OR p:Practitioner) " +
-          "AND p.identifier = $identifier " +
+          "AND p.id = $identifier " +
           "OPTIONAL MATCH (p)-[r]-(other) " +
+          "WHERE NOT coalesce(other.name, '') CONTAINS 'Generic' " +
           "RETURN p AS n, r, other AS m LIMIT 500"
         : "MATCH (n) " +
           "WHERE n:Patient OR n:Condition OR n:Observation " +
@@ -96,17 +96,16 @@ public class GraphService {
                                     ? neoNode.labels().iterator().next()
                                     : "Node";
 
-                            // ================= FHIR NAME (NO FLATTENING) =================
-                            Object g = props.get("given");
-                            Object f = props.get("family");
-
-                            String given = g != null ? g.toString() : "";
-                            String family = f != null ? f.toString() : "";
+                        // ================= DISPLAY NAME EXTRACT =================
+                        Object nameObj = props.get("name");
+                        Object familyObj = props.get("name_family");
 
                             String displayName;
 
-                            if (!given.isBlank() || !family.isBlank()) {
-                                displayName = (given + " " + family).trim();
+                        if (nameObj != null && !nameObj.toString().isBlank()) {
+                            displayName = nameObj.toString();
+                        } else if (familyObj != null && !familyObj.toString().isBlank()) {
+                            displayName = familyObj.toString();
                             } else {
                                 displayName = label + " " + nodeId;
                             }

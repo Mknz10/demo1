@@ -34,9 +34,9 @@ public class DocumentController {
 
     @GetMapping("/practitioner/{identifier}")
     public ResponseEntity<?> getPractitionerDocuments(@PathVariable String identifier) {
-        String cypher = "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient)<-[:subject]-(n)-[:source]->(d:Document) " +
-                        "WHERE d.name IS NOT NULL " +
-                        "RETURN DISTINCT d.id AS id, d.name AS name, p.identifier AS patientId, p.name[0].family AS patientFamily, p.name[0].given[0] AS patientGiven, d.uploadDate AS uploadDate " +
+        String cypher = "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id " +
+                        "AND d.name IS NOT NULL " +
+                        "RETURN DISTINCT d.id AS id, d.name AS name, p.id AS patientId, d.uploadDate AS uploadDate " +
                         "ORDER BY d.uploadDate DESC";
         List<Map<String, Object>> docs = new ArrayList<>();
         try (Session session = driver.session()) {
@@ -52,9 +52,8 @@ public class DocumentController {
 
     @GetMapping("/patients/{identifier}")
     public ResponseEntity<?> getPatients(@PathVariable String identifier) {
-        String cypher = "MATCH (:Practitioner {identifier: $id})-[:TREATS]->(p:Patient) " +
-                        "RETURN p.identifier AS id, p.name[0].family AS family, p.name[0].given[0] AS given " +
-                        "ORDER BY family, given";
+        String cypher = "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient) WHERE pr.id = $id " +
+                        "RETURN p.id AS id, p.gender AS gender, p.birthDate AS birthDate ";
         List<Map<String, Object>> patients = new ArrayList<>();
         try (Session session = driver.session()) {
             Result result = session.run(cypher, Values.parameters("id", identifier));
@@ -69,8 +68,8 @@ public class DocumentController {
 
     @GetMapping("/patient/{identifier}")
     public ResponseEntity<?> getPatientDocuments(@PathVariable String identifier) {
-        String cypher = "MATCH (p:Patient {identifier: $id})<-[:subject]-(n)-[:source]->(d:Document) " +
-                        "WHERE d.name IS NOT NULL " +
+        String cypher = "MATCH (p:Patient)-[]->(n)-[:source]->(d:Document) WHERE p.id = $id " +
+                        "AND d.name IS NOT NULL " +
                         "RETURN DISTINCT d.id AS id, d.name AS name, d.uploadDate AS uploadDate " +
                         "ORDER BY d.uploadDate DESC LIMIT 50";
         List<Map<String, Object>> docs = new ArrayList<>();

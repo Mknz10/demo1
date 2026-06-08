@@ -115,16 +115,24 @@ export default function App() {
       ? graphData.nodes.find(
           (node) =>
             (node.label === "Patient" || node.label === "Practitioner") &&
-            node.properties?.identifier === loggedIdentifier,
+            (node.properties?.identifier === loggedIdentifier ||
+              node.properties?.id === loggedIdentifier),
         )
       : null;
 
   const isPractitioner = userNode?.label === "Practitioner";
 
   // --- NAME ---
-  let given = "";
+  let given = userNode?.properties?.firstName || "";
 
-  if (userNode?.properties?.name?.length > 0) {
+  if (!given && Array.isArray(userNode?.properties?.name_given)) {
+    given = userNode.properties.name_given.join(" ");
+  }
+  if (
+    !given &&
+    Array.isArray(userNode?.properties?.name) &&
+    userNode.properties.name.length > 0
+  ) {
     const nameObj =
       userNode.properties.name.find((n) => n.use === "official") ||
       userNode.properties.name[0];

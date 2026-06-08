@@ -61,46 +61,44 @@ public class LlmExtractionService {
             "You are a medical informatics expert. Extract structured clinical data into Memgraph Cypher that is fully FHIR-aligned.\n\n" +
             "CRITICAL RULES:\n" +
             "1. ALLOWED LABELS:\n" +
-            "Only use: Patient, Condition, Observation, MedicationRequest, Procedure.\n\n" +
+            "Only use: Patient, Condition, Observation, MedicationAdministration, MedicationRequest, Procedure.\n\n" +
             "Every node MUST include:\n" +
             "- resourceType (must exactly match label)\n" +
-            "- code\n" +
-            "- system (must be full URI)\n" +
-            "- display\n" +
-            "- documentId (must be set to '" + docId + "' for every Condition, Observation, MedicationRequest, and Procedure node)\n\n" +
+            "- id (generate a random UUID for each new node)\n" +
+            "- name (the clinical display name)\n" +
+            "- status (e.g., 'active', 'completed', 'N/A')\n" +
+            "- documentId (must be set to '" + docId + "')\n\n" +
             "2. PATIENT (SINGLE SOURCE OF TRUTH — STRICT):\n" +
             "You MUST create or match ONLY ONE Patient node.\n\n" +
             "Always begin output with exactly:\n" +
-            "MERGE (p:Patient {identifier: '" + identifier + "'})\n" +
+            "MERGE (p:Patient {id: '" + identifier + "'})\n" +
             "ON CREATE SET p.resourceType = 'Patient';\n\n" +
             "IMPORTANT:\n" +
             "- Do NOT include any other properties in the MERGE.\n" +
             "- Do NOT create another Patient node under any circumstance.\n\n" +
             "3. PATIENT REUSE (MANDATORY):\n" +
             "Every subsequent statement MUST start with:\n" +
-            "MATCH (p:Patient {identifier: '" + identifier + "'})\n" +
+            "MATCH (p:Patient {id: '" + identifier + "'})\n" +
             "You MUST always reuse the SAME variable p.\n\n" +
             "4. RELATIONSHIP RULE (STRICT):\n" +
-            "All clinical resources MUST connect to the patient like this:\n" +
-            "(Resource)-[:subject]->(p)\n\n" +
-            "- Use ONLY relationship type: subject\n" +
+            "All clinical resources MUST connect FROM the patient TO the resource like this:\n" +
+            "(p)-[:HAS_<RESOURCETYPE_UPPERCASE>]->(Resource)\n\n" +
+            "Example for Observation: (p)-[:HAS_OBSERVATION]->(o)\n" +
+            "Example for Condition: (p)-[:HAS_CONDITION]->(c)\n\n" +
             "- NEVER create relationships to a new or inline Patient node\n" +
             "- NEVER add properties to relationships\n\n" +
             "5. CLINICAL NODE CREATION RULES:\n" +
-            "Use MERGE (not CREATE) for all clinical entities.\n\n" +
-            "Observation MERGE keys:\n" +
-            "- code + system + valueQuantity_value + valueQuantity_unit\n\n" +
-            "Condition MERGE keys:\n" +
-            "- code + system\n\n" +
-            "MedicationRequest MERGE keys:\n" +
-            "- code + system + dosageInstruction_text\n\n" +
-            "Procedure MERGE keys:\n" +
-            "- code + system\n\n" +
+            "Use MERGE based on BOTH the `name` AND `documentId` properties.\n\n" +
+            "Distinguish between medications:\n" +
+            "- Use `MedicationRequest` for prescriptions, home medications, or discharge recommendations.\n" +
+            "- Use `MedicationAdministration` for IVs, injections, or medications actually administered in the clinic/hospital.\n\n" +
+            "Example:\n" +
+            "MERGE (o:Observation {name: 'Hemoglobin: 14.2 g/dL', documentId: '" + docId + "'})\n" +
+            "ON CREATE SET o.id = randomUUID(), o.status = 'final', o.resourceType = 'Observation'\n" +
+            "// CRITICAL: For Observations (lab results, vitals), the 'name' property MUST include the measured value and unit!\n" +
+            "MERGE (p)-[:HAS_OBSERVATION]->(o);\n\n" +
             "6. DATA FLATTENING:\n" +
-            "Use only flat properties:\n" +
-            "- valueQuantity_value\n" +
-            "- valueQuantity_unit\n" +
-            "- dosageInstruction_text\n\n" +
+            "Use only flat properties (id, name, status, resourceType, documentId).\n" +
             "Do NOT use nested objects.\n\n" +
             "7. DEDUPLICATION:\n" +
             "Never create duplicate nodes with the same identity keys.\n\n" +
@@ -111,13 +109,14 @@ public class LlmExtractionService {
             "- Every statement ends with a semicolon\n\n" +
             "9. SAFETY RULE:\n" +
             "Do NOT redefine or recreate Patient anywhere in the output.\n\n" +
-            "10. DOCUMENT LINKING (NEW):\n" +
-            "Every extracted node (Condition, Observation, MedicationRequest, Procedure) MUST have a relationship to the Document node like this: (n)-[:source]->(d) where d:Document.\n" +
-            "Use the Document node with id: '" + docId + "'.\n\n" +
-            "11. EXHAUSTIVE EXTRACTION (CRITICAL):\n" +
+            "10. EXHAUSTIVE EXTRACTION (CRITICAL):\n" +
             "You MUST NOT skip any clinical data, especially lab results.\n" +
             "If you see a list of blood tests, urinalysis or observations (e.g., Neutrofile, Limfocite, INR, Eozinofile, Glicemie), you MUST create a separate Observation node for EVERY SINGLE line item.\n" +
             "Do not summarize or skip anything to save space. Be 100% exhaustive.\n\n" +
+            "11. TRANSLATION TO ENGLISH (MANDATORY):\n" +
+            "You MUST translate ALL medical terms, test names, diagnoses, and procedures into ENGLISH.\n" +
+            "For example, instead of 'Tensiune arterială: 110/70 mmHg', you MUST output 'Blood Pressure: 110/70 mmHg'.\n" +
+            "Keep numerical values and medical units exactly as they appear in the text.\n\n" +
             "Medical Notes:\n" + extractedText;
             
         // 3. Ask the LLM to generate Cypher
@@ -136,7 +135,7 @@ public class LlmExtractionService {
 
         // Split by semicolon and execute each statement individually
         String[] statements = cypherQueries.split(";");
-        String patientMatch = "MATCH (p:Patient {identifier: '" + identifier + "'}) ";
+        String patientMatch = "MATCH (p:Patient {id: '" + identifier + "'}) ";
         Map<String, Object> docParams = new HashMap<>();
         docParams.put("docId", docId);
         docParams.put("docName", docName);
@@ -154,7 +153,7 @@ public class LlmExtractionService {
                 String trimmed = stmt.trim();
                 if (!trimmed.isEmpty()) {
                     // Try to inject MATCH p if missing and it tries to link to p
-                    if (trimmed.contains("-[:subject]->(p)") && !trimmed.startsWith("MATCH (p:Patient")) {
+                    if (trimmed.contains("(p)-[:HAS_") && !trimmed.startsWith("MATCH (p:Patient")) {
                         trimmed = patientMatch + trimmed;
                     }
                     try {
@@ -169,14 +168,15 @@ public class LlmExtractionService {
             // 3. BULLETPROOF FALLBACK (Fixes floating nodes)
             // Because the LLM successfully sets the `documentId` property on the nodes,
             // we can safely query for them and force the relationships to exist.
-            String[] types = {"Observation", "Condition", "MedicationRequest", "Procedure"};
+            String[] types = {"Observation", "Condition", "MedicationAdministration", "MedicationRequest", "Procedure"};
             for (String type : types) {
                 
                 // Step A: Guarantee the node is linked to the Patient
+                String relType = "HAS_" + type.toUpperCase();
                 String linkToPatient = 
                     "MATCH (n:" + type + " {documentId: '" + docId + "'}) " +
-                    "MATCH (p:Patient {identifier: '" + identifier + "'}) " +
-                    "MERGE (n)-[:subject]->(p)";
+                    "MATCH (p:Patient {id: '" + identifier + "'}) " +
+                    "MERGE (p)-[:" + relType + "]->(n)";
                 session.run(linkToPatient);
 
                 // Step B: Guarantee the node is linked to the Document
@@ -186,6 +186,15 @@ public class LlmExtractionService {
                     "MERGE (n)-[:source]->(d)";
                 session.run(linkToDocument);
             }
+            
+            // 4. CLEANUP HALUCINATIONS (Anti-Noduri Aiurea)
+            // Curățăm orice nod pe care AI-ul l-a inventat și care nu respectă modelul oficial din baza de date
+            String cleanupCypher = 
+                "MATCH (n) WHERE n.documentId = $docId " +
+                "AND NOT n:Patient AND NOT n:Document " +
+                "AND NOT n:Condition AND NOT n:Observation AND NOT n:MedicationAdministration AND NOT n:MedicationRequest AND NOT n:Procedure " +
+                "DETACH DELETE n";
+            session.run(cleanupCypher, docParams);
         }
     }
 

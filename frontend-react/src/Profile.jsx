@@ -26,13 +26,20 @@ export default function Profile({ graphData }) {
     userNode = graphData.nodes.find(
       (node) =>
         node.label === "Patient" &&
-        node.properties?.identifier === loggedIdentifier,
+        (node.properties?.identifier === loggedIdentifier ||
+          node.properties?.id === loggedIdentifier),
     );
   }
 
-  // Extract lastName and firstName from FHIR-style 'name' array
-  let lastName = "-";
-  let firstName = "-";
+  // Extragere Nume și Prenume (suportă formatul cu name_family / name_given)
+  let lastName =
+    userNode?.properties?.lastName || userNode?.properties?.name_family || "";
+  let firstName = userNode?.properties?.firstName || "";
+
+  if (!firstName && Array.isArray(userNode?.properties?.name_given)) {
+    firstName = userNode.properties.name_given.join(" ");
+  }
+
   if (
     userNode?.properties?.name &&
     Array.isArray(userNode.properties.name) &&
@@ -41,12 +48,24 @@ export default function Profile({ graphData }) {
     const nameObj =
       userNode.properties.name.find((n) => n.use === "official") ||
       userNode.properties.name[0];
-    lastName = nameObj.family || "-";
+    lastName = nameObj.family || lastName;
     if (Array.isArray(nameObj.given) && nameObj.given.length > 0) {
       firstName = nameObj.given.join(" ");
     }
   }
-  const gender = userNode?.properties?.gender || "-";
+  if (!firstName) {
+    firstName = "Pacient";
+  }
+
+  const rawGender = userNode?.properties?.gender || "-";
+  const genderMap = {
+    male: "Masculin",
+    female: "Feminin",
+    unknown: "Necunoscut",
+    other: "Altul",
+  };
+  const gender = genderMap[rawGender?.toLowerCase()] || rawGender;
+
   const birthDate = userNode?.properties?.birthDate || "-";
 
   // Stare pentru câmpurile editabile
@@ -85,7 +104,11 @@ export default function Profile({ graphData }) {
       if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
         years--;
       }
-      age = years;
+      if (years < 0) {
+        age = "Date anonimizate (MIMIC)";
+      } else {
+        age = years + " ani";
+      }
     }
   }
 
@@ -260,7 +283,7 @@ export default function Profile({ graphData }) {
                     Vârstă
                   </label>
                   <div className="text-gray-900 font-semibold mt-0.5">
-                    {age} ani
+                    {age}
                   </div>
                 </div>
               </div>

@@ -9,6 +9,7 @@ import org.neo4j.driver.Session;
 import org.neo4j.driver.Values;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/auth")
+@CrossOrigin(origins = "*")
 public class AuthController {
 
     private final Driver driver;
@@ -28,13 +30,13 @@ public class AuthController {
 
     // ================= LOGIN =================
     @PostMapping("/login")
-    public ResponseEntity<String> login(@RequestBody Map<String, Object> payload) {
+    public ResponseEntity<?> login(@RequestBody Map<String, Object> payload) {
 
         String identifier = extractIdentifier(payload);
 
         if (identifier == null) {
             return ResponseEntity.badRequest()
-                    .body("Missing FHIR identifier");
+                    .body(Map.of("error", "Missing FHIR identifier"));
         }
 
         try (Session session = driver.session()) {
@@ -42,8 +44,8 @@ public class AuthController {
             // Changed: Checks for either a Patient OR a Practitioner node
             boolean exists = session.executeRead(tx -> {
                 Result result = tx.run(
-                        "MATCH (u {identifier: $identifier}) " +
-                        "WHERE u:Patient OR u:Practitioner " +
+                        "MATCH (u) " +
+                        "WHERE u.id = $identifier AND (u:Patient OR u:Practitioner) " +
                         "RETURN 1 LIMIT 1",
                         Values.parameters("identifier", identifier)
                 );
@@ -52,15 +54,15 @@ public class AuthController {
 
             if (!exists) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                        .body("User not found"); // Updated error message
+                        .body(Map.of("error", "User not found"));
             }
 
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Database error");
+                    .body(Map.of("error", "Database error: " + e.getMessage()));
         }
 
-        return ResponseEntity.ok(identifier);
+        return ResponseEntity.ok(Map.of("identifier", identifier));
     }
 
     // ================= REGISTER =================
@@ -93,7 +95,7 @@ public class AuthController {
 
             boolean exists = session.executeRead(tx -> {
                 Result result = tx.run(
-                        "MATCH (p:Patient {identifier: $identifier}) RETURN 1 LIMIT 1",
+                        "MATCH (p:Patient) WHERE p.id = $identifier RETURN 1 LIMIT 1",
                         Values.parameters("identifier", identifier)
                 );
                 return result.hasNext();
@@ -106,26 +108,26 @@ public class AuthController {
 
             session.executeWrite(tx -> {
                 tx.run(
-                    "MERGE (p:Patient {identifier: $identifier}) " +
+                    "MERGE (p:Patient {id: $identifier}) " +
                     "SET p.gender = $gender, " +
                     "    p.birthDate = $birthDate, " +
-                    "    p.name = [{ " +
-                    "        use: 'official', " +
-                    "        family: $family, " +
-                    "        given: [$given] " +
-                    "    }]",
+                    "    p.name_use = 'official', " +
+                    "    p.name_family = $family, " +
+                    "    p.name_given = [$given], " +
+                    "    p.name = $given + ' ' + $family, " +
+                    "    p.resourceType = 'Patient'",
                     Values.parameters(
                             "identifier", identifier,
-                            "given", givenName,
-                            "family", familyName,
                             "gender", gender,
-                            "birthDate", birthDate
+                            "birthDate", birthDate,
+                            "given", givenName,
+                            "family", familyName
                     )
                 ).consume();
 
                 tx.run(
-                    "MATCH (pr:Practitioner {identifier: $prId}) " +
-                    "MATCH (p:Patient {identifier: $pid}) " +
+                    "MATCH (pr:Practitioner) WHERE pr.id = $prId " +
+                    "MATCH (p:Patient) WHERE p.id = $pid " +
                     "MERGE (pr)-[:TREATS]->(p)",
                     Values.parameters(
                             "prId", practitionerId,
@@ -150,7 +152,7 @@ public class AuthController {
         try (Session session = driver.session()) {
             boolean hasAccess = session.executeRead(tx -> {
                 Result result = tx.run(
-                        "MATCH (:Practitioner)-[:TREATS]->(p:Patient {identifier: $pid}) RETURN count(p) > 0 AS hasAccess",
+                        "MATCH (:Practitioner)-[:TREATS]->(p:Patient) WHERE p.id = $pid RETURN count(p) > 0 AS hasAccess",
                         Values.parameters("pid", identifier)
                 );
                 return result.hasNext() && result.next().get("hasAccess").asBoolean();
@@ -174,12 +176,12 @@ public class AuthController {
         try (Session session = driver.session()) {
             session.executeWrite(tx -> {
                 if (enable) {
-                    tx.run("MATCH (p:Patient {identifier: $pid}) " +
-                           "MATCH (pr:Practitioner {identifier: coalesce(p.practitionerId, '1234567890')}) " +
+                tx.run("MATCH (p:Patient) WHERE p.id = $pid " +
+                           "MATCH (pr:Practitioner {id: coalesce(p.practitionerId, '1234567890')}) " +
                            "MERGE (pr)-[:TREATS]->(p)", Values.parameters("pid", patientId)).consume();
                 } else {
-                    tx.run("MATCH (pr:Practitioner)-[r:TREATS]->(p:Patient {identifier: $pid}) " +
-                           "SET p.practitionerId = pr.identifier " +
+                tx.run("MATCH (pr:Practitioner)-[r:TREATS]->(p:Patient) WHERE p.id = $pid " +
+                           "SET p.practitionerId = pr.id " +
                            "DELETE r", Values.parameters("pid", patientId)).consume();
                 }
                 return null;

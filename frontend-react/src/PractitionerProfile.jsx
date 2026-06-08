@@ -29,10 +29,15 @@ export default function PractitionerProfile({ graphData }) {
     );
   }
 
-  // Extragere Nume, Prenume și Prefix (ex: "Dr.")
-  let lastName = "-";
-  let firstName = "-";
-  let prefix = "";
+  // Extragere Nume, Prenume și Prefix (suportă formatul cu name_family / name_given)
+  let lastName =
+    userNode?.properties?.lastName || userNode?.properties?.name_family || "-";
+  let firstName = userNode?.properties?.firstName || "";
+
+  if (!firstName && Array.isArray(userNode?.properties?.name_given)) {
+    firstName = userNode.properties.name_given.join(" ");
+  }
+  let prefix = userNode?.properties?.prefix || "";
 
   if (
     userNode?.properties?.name &&
@@ -43,7 +48,7 @@ export default function PractitionerProfile({ graphData }) {
       userNode.properties.name.find((n) => n.use === "official") ||
       userNode.properties.name[0];
 
-    lastName = nameObj.family || "-";
+    lastName = nameObj.family || lastName;
 
     if (Array.isArray(nameObj.given) && nameObj.given.length > 0) {
       firstName = nameObj.given.join(" ");
@@ -53,6 +58,9 @@ export default function PractitionerProfile({ graphData }) {
     if (Array.isArray(nameObj.prefix) && nameObj.prefix.length > 0) {
       prefix = nameObj.prefix.join(" ") + " ";
     }
+  }
+  if (!firstName) {
+    firstName = "-";
   }
 
   const gender = userNode?.properties?.gender || "-";
