@@ -76,9 +76,8 @@ export default function Profile({ graphData }) {
   // Stare nouă pentru a controla modul de editare
   const [isEditing, setIsEditing] = useState(false);
 
-  // Stare pentru permisiuni acces doctor
-  const [accessEnabled, setAccessEnabled] = useState(true);
-  const [isToggling, setIsToggling] = useState(false);
+  // Stare pentru lista cu medicii curanți și permisiunile fiecăruia
+  const [doctors, setDoctors] = useState([]);
 
   // Când datele vin din graf, precompletăm câmpurile dacă ele există deja
   useEffect(() => {
@@ -114,45 +113,72 @@ export default function Profile({ graphData }) {
 
   // Fetch initial status
   useEffect(() => {
-    const fetchStatus = async () => {
+    const fetchDoctors = async () => {
       try {
         const res = await fetch(
-          `http://localhost:8080/auth/access-status?identifier=${loggedIdentifier}`,
+          `http://localhost:8080/auth/doctors-access?patientId=${loggedIdentifier}`,
         );
-        const status = await res.json();
-        setAccessEnabled(status);
+        if (res.ok) {
+          const data = await res.json();
+          setDoctors(data);
+        }
       } catch (err) {
-        console.error("Failed to fetch access status", err);
+        console.error("Failed to fetch doctors access status", err);
       }
     };
-    if (loggedIdentifier) fetchStatus();
+    if (loggedIdentifier) fetchDoctors();
   }, [loggedIdentifier]);
 
-  // Funcția de comutare acces doctor
-  const handleToggleAccess = async () => {
-    setIsToggling(true);
-    const newStatus = !accessEnabled;
+  // Funcția de comutare acces pentru un medic individual
+  const handleToggleAccess = async (doctorId, currentStatus) => {
+    // Setăm starea de încărcare strict pe doctorul respectiv
+    setDoctors((prev) =>
+      prev.map((doc) =>
+        doc.id === doctorId ? { ...doc, isToggling: true } : doc,
+      ),
+    );
+
+    const newStatus = !currentStatus;
 
     try {
-      const res = await fetch("http://localhost:8080/auth/toggle-access", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          identifier: loggedIdentifier,
-          enable: newStatus,
-        }),
-      });
+      const res = await fetch(
+        "http://localhost:8080/auth/toggle-doctor-access",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            patientId: loggedIdentifier,
+            doctorId: doctorId,
+            enable: newStatus,
+          }),
+        },
+      );
 
       if (res.ok) {
-        setAccessEnabled(newStatus);
+        setDoctors((prev) =>
+          prev.map((doc) =>
+            doc.id === doctorId
+              ? { ...doc, hasAccess: newStatus, isToggling: false }
+              : doc,
+          ),
+        );
       } else {
         alert("Eroare la modificarea permisiunilor.");
+        // Revertim starea butonului
+        setDoctors((prev) =>
+          prev.map((doc) =>
+            doc.id === doctorId ? { ...doc, isToggling: false } : doc,
+          ),
+        );
       }
     } catch (err) {
       console.error("Toggle failed", err);
       alert("Eroare de rețea la conectarea cu serverul.");
-    } finally {
-      setIsToggling(false);
+      setDoctors((prev) =>
+        prev.map((doc) =>
+          doc.id === doctorId ? { ...doc, isToggling: false } : doc,
+        ),
+      );
     }
   };
 
@@ -336,32 +362,63 @@ export default function Profile({ graphData }) {
           </div>
 
           {/* Secțiune Acces Medic */}
-          <div className="mt-8 bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-6 shadow-sm">
-            <div>
+          <div className="mt-8 bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-200 rounded-2xl p-6 shadow-sm">
+            <div className="mb-6">
               <h3 className="text-lg font-bold text-teal-900 flex items-center gap-2 mb-1">
-                <Shield className="w-5 h-5 text-teal-600" /> Permisiuni Dosar
-                Medical
+                <Shield className="w-5 h-5 text-teal-600" /> Permisiuni Medici
+                Curanți
               </h3>
               <p className="text-teal-700 text-sm">
-                Gestionează dreptul medicului de a vizualiza analizele și
-                istoricul tău medical.
+                Gestionează individual ce medic are dreptul să îți vizualizeze
+                analizele și istoricul medical.
               </p>
             </div>
-            <button
-              onClick={handleToggleAccess}
-              disabled={isToggling}
-              className={`px-6 py-3 rounded-xl font-bold text-white shadow-md transition-all whitespace-nowrap min-w-[180px] ${
-                accessEnabled
-                  ? "bg-rose-500 hover:bg-rose-600"
-                  : "bg-emerald-500 hover:bg-emerald-600"
-              } disabled:opacity-50`}
-            >
-              {isToggling
-                ? "Se actualizează..."
-                : accessEnabled
-                  ? "Revocă Accesul"
-                  : "Permite Accesul"}
-            </button>
+
+            <div className="space-y-3">
+              {doctors.length === 0 ? (
+                <div className="text-teal-600 text-sm italic">
+                  Nu aveți medici asociați în sistem în acest moment.
+                </div>
+              ) : (
+                doctors.map((doctor) => (
+                  <div
+                    key={doctor.id}
+                    className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-teal-100 shadow-sm transition-all hover:shadow-md"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="bg-teal-100 p-2 rounded-full">
+                        <User className="w-5 h-5 text-teal-600" />
+                      </div>
+                      <div>
+                        <div className="font-bold text-gray-800">
+                          {doctor.name}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          ID: {doctor.id}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        handleToggleAccess(doctor.id, doctor.hasAccess)
+                      }
+                      disabled={doctor.isToggling}
+                      className={`px-5 py-2.5 rounded-xl font-bold text-sm text-white shadow-md transition-all whitespace-nowrap w-full sm:w-auto ${
+                        doctor.hasAccess
+                          ? "bg-rose-500 hover:bg-rose-600"
+                          : "bg-emerald-500 hover:bg-emerald-600"
+                      } disabled:opacity-50`}
+                    >
+                      {doctor.isToggling
+                        ? "Se actualizează..."
+                        : doctor.hasAccess
+                          ? "Revocă Accesul"
+                          : "Permite Accesul"}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>

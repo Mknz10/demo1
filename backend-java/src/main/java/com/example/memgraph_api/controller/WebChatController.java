@@ -35,7 +35,8 @@ public class WebChatController {
             String systemPrompt = "Ești un asistent medical AI pentru pacienți. "
                                 + "Rolul tău este să oferi informații generale despre analize medicale, simptome, valori crescute/scăzute etc. "
                                 + "Explică pe înțelesul tuturor, clar și prietenos. La final, adaugă un disclaimer recomandând consultul unui medic. "
-                                + "Fii scurt și la obiect.";
+                                + "Fii scurt și la obiect. "
+                                + "REGULĂ DE LIMBĂ: Răspunde OBLIGATORIU în aceeași limbă în care a fost pusă întrebarea (ex. română, engleză etc.).";
 
             String aiResponse = chatClient.prompt()
                     .system(systemPrompt)

@@ -9,6 +9,7 @@ import java.util.Map;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.neo4j.driver.Driver;
+import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.embedding.EmbeddingModel;
@@ -28,13 +29,17 @@ public class LlmExtractionService {
         this.embeddingModel = embeddingModel;
     }
 
-    public void processPdfAndStore(MultipartFile file, String identifier) throws Exception {
+    // ==========================================
+    // PASUL 1: Încărcarea documentului (Salvare text în baza de date)
+    // ==========================================
+    public String uploadDocumentOnly(MultipartFile file, String identifier) throws Exception {
         String extractedText;
         String fileName = file.getOriginalFilename();
         LocalDate uploadDate = LocalDate.now();
 
         try (PDDocument document = PDDocument.load(file.getInputStream())) {
             PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true); // Pentru păstrarea alinierii tabelelor
             extractedText = stripper.getText(document);
         }
 
@@ -51,10 +56,48 @@ public class LlmExtractionService {
         }
 
         // 2. Create Document node Cypher
-        String docId = identifier + "_" + uploadDate.toString() + "_" + fileName;
-        String docName = fileName;
-        String createDocumentCypher = "MERGE (d:Document {id: $docId}) " +
-            "SET d.name = $docName, d.uploadDate = $uploadDate, d.releaseDate = $releaseDate, d.embedding = $embeddingVector";
+        String docId = identifier + "_" + uploadDate.toString() + "_" + System.currentTimeMillis() + "_" + fileName;
+        
+        String createDocumentCypher = 
+            "MERGE (p:Patient {id: $identifier}) " +
+            "ON CREATE SET p.resourceType = 'Patient' " +
+            "MERGE (d:Document {id: $docId}) " +
+            "SET d.name = $docName, d.uploadDate = $uploadDate, d.releaseDate = $releaseDate, d.embedding = $embeddingVector, d.rawText = $rawText, d.status = 'PENDING' " +
+            "MERGE (p)-[:HAS_DOCUMENT]->(d)";
+
+        Map<String, Object> docParams = new HashMap<>();
+        docParams.put("identifier", identifier);
+        docParams.put("docId", docId);
+        docParams.put("docName", fileName);
+        docParams.put("uploadDate", uploadDate.toString());
+        docParams.put("releaseDate", releaseDate.toString());
+        docParams.put("embeddingVector", embeddingVector);
+        docParams.put("rawText", extractedText);
+
+        try (Session session = driver.session()) {
+            session.run(createDocumentCypher, docParams);
+        }
+        
+        return docId;
+    }
+
+    // ==========================================
+    // PASUL 2: Procesarea documentului cu AI (Extragere Grafe)
+    // ==========================================
+    public void processDocumentWithLlm(String docId, String identifier) throws Exception {
+        String extractedText = "";
+        String docName = "";
+
+        try (Session session = driver.session()) {
+            Result result = session.run("MATCH (d:Document {id: $docId}) RETURN d.rawText AS text, d.name AS name", Map.of("docId", docId));
+            if (result.hasNext()) {
+                var record = result.next();
+                extractedText = record.get("text").asString();
+                docName = record.get("name").asString();
+            } else {
+                throw new IllegalArgumentException("Documentul nu a fost găsit în baza de date.");
+            }
+        }
 
         // 3. Formulate the prompt for the LLM, include the identifier and docId for user isolation
         String systemPrompt =
@@ -67,18 +110,18 @@ public class LlmExtractionService {
             "- id (generate a random UUID for each new node)\n" +
             "- name (the clinical display name)\n" +
             "- status (e.g., 'active', 'completed', 'N/A')\n" +
-            "- documentId (must be set to '" + docId + "')\n\n" +
+            "- documentId (must be set to $docId)\n\n" +
             "2. PATIENT (SINGLE SOURCE OF TRUTH — STRICT):\n" +
             "You MUST create or match ONLY ONE Patient node.\n\n" +
             "Always begin output with exactly:\n" +
-            "MERGE (p:Patient {id: '" + identifier + "'})\n" +
+            "MERGE (p:Patient {id: $identifier})\n" +
             "ON CREATE SET p.resourceType = 'Patient';\n\n" +
             "IMPORTANT:\n" +
             "- Do NOT include any other properties in the MERGE.\n" +
             "- Do NOT create another Patient node under any circumstance.\n\n" +
             "3. PATIENT REUSE (MANDATORY):\n" +
             "Every subsequent statement MUST start with:\n" +
-            "MATCH (p:Patient {id: '" + identifier + "'})\n" +
+            "MATCH (p:Patient {id: $identifier})\n" +
             "You MUST always reuse the SAME variable p.\n\n" +
             "4. RELATIONSHIP RULE (STRICT):\n" +
             "All clinical resources MUST connect FROM the patient TO the resource like this:\n" +
@@ -93,7 +136,7 @@ public class LlmExtractionService {
             "- Use `MedicationRequest` for prescriptions, home medications, or discharge recommendations.\n" +
             "- Use `MedicationAdministration` for IVs, injections, or medications actually administered in the clinic/hospital.\n\n" +
             "Example:\n" +
-            "MERGE (o:Observation {name: 'Hemoglobin: 14.2 g/dL', documentId: '" + docId + "'})\n" +
+            "MERGE (o:Observation {name: 'Hemoglobin: 14.2 g/dL', documentId: $docId})\n" +
             "ON CREATE SET o.id = randomUUID(), o.status = 'final', o.resourceType = 'Observation'\n" +
             "// CRITICAL: For Observations (lab results, vitals), the 'name' property MUST include the measured value and unit!\n" +
             "MERGE (p)-[:HAS_OBSERVATION]->(o);\n\n" +
@@ -117,6 +160,11 @@ public class LlmExtractionService {
             "You MUST translate ALL medical terms, test names, diagnoses, and procedures into ENGLISH.\n" +
             "For example, instead of 'Tensiune arterială: 110/70 mmHg', you MUST output 'Blood Pressure: 110/70 mmHg'.\n" +
             "Keep numerical values and medical units exactly as they appear in the text.\n\n" +
+            "12. STRICT NUMERICAL ACCURACY (ZERO TOLERANCE):\n" +
+            "You MUST copy all numerical values EXACTLY as they appear in the source text.\n" +
+            "DO NOT transpose digits (e.g., '3.87' MUST NOT become '3.78').\n" +
+            "DO NOT round numbers. DO NOT change decimal or thousand separators.\n" +
+            "Pay extreme attention to the exact order of digits in lab results and dosages. Double-check your numbers before outputting.\n\n" +
             "Medical Notes:\n" + extractedText;
             
         // 3. Ask the LLM to generate Cypher
@@ -135,18 +183,14 @@ public class LlmExtractionService {
 
         // Split by semicolon and execute each statement individually
         String[] statements = cypherQueries.split(";");
-        String patientMatch = "MATCH (p:Patient {id: '" + identifier + "'}) ";
         Map<String, Object> docParams = new HashMap<>();
         docParams.put("docId", docId);
-        docParams.put("docName", docName);
-        docParams.put("uploadDate", uploadDate.toString());
-        docParams.put("releaseDate", releaseDate.toString());
-        docParams.put("embeddingVector", embeddingVector);
+        docParams.put("identifier", identifier);
 
         try (Session session = driver.session()) {
             
-            // 1. Create or update the Document node first
-            session.run(createDocumentCypher, docParams);
+            // 1. Marcăm documentul ca fiind procesat
+            session.run("MATCH (d:Document {id: $docId}) SET d.status = 'PROCESSED'", docParams);
             
             // 2. Execute the LLM generated statements
             for (String stmt : statements) {
@@ -154,13 +198,13 @@ public class LlmExtractionService {
                 if (!trimmed.isEmpty()) {
                     // Try to inject MATCH p if missing and it tries to link to p
                     if (trimmed.contains("(p)-[:HAS_") && !trimmed.startsWith("MATCH (p:Patient")) {
-                        trimmed = patientMatch + trimmed;
+                        trimmed = "MATCH (p:Patient {id: $identifier}) " + trimmed;
                     }
                     try {
-                        session.run(trimmed);
+                        session.run(trimmed, docParams);
                     } catch (Exception e) {
                         // Log LLM syntax errors but don't crash the whole extraction
-                        System.err.println("Skipped malformed LLM Cypher: " + trimmed);
+                        System.err.println("Skipped malformed LLM Cypher: " + trimmed + " | Error: " + e.getMessage());
                     }
                 }
             }
@@ -174,17 +218,17 @@ public class LlmExtractionService {
                 // Step A: Guarantee the node is linked to the Patient
                 String relType = "HAS_" + type.toUpperCase();
                 String linkToPatient = 
-                    "MATCH (n:" + type + " {documentId: '" + docId + "'}) " +
-                    "MATCH (p:Patient {id: '" + identifier + "'}) " +
+                    "MATCH (n:" + type + " {documentId: $docId}) " +
+                    "MATCH (p:Patient {id: $identifier}) " +
                     "MERGE (p)-[:" + relType + "]->(n)";
-                session.run(linkToPatient);
+                session.run(linkToPatient, docParams);
 
                 // Step B: Guarantee the node is linked to the Document
                 String linkToDocument = 
-                    "MATCH (n:" + type + " {documentId: '" + docId + "'}) " +
-                    "MATCH (d:Document {id: '" + docId + "'}) " +
+                    "MATCH (n:" + type + " {documentId: $docId}) " +
+                    "MATCH (d:Document {id: $docId}) " +
                     "MERGE (n)-[:source]->(d)";
-                session.run(linkToDocument);
+                session.run(linkToDocument, docParams);
             }
             
             // 4. CLEANUP HALUCINATIONS (Anti-Noduri Aiurea)

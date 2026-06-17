@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Send, Bot, Database, Globe } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export default function Chat() {
   const [message, setMessage] = useState("");
@@ -41,6 +43,15 @@ export default function Chat() {
     setChatHistory((prev) => [...prev, { sender: "user", text: userMessage }]);
     setIsLoading(true);
 
+    // Preluăm ultimele 4 mesaje pentru a oferi AI-ului context conversațional
+    const recentHistory = chatHistory
+      .slice(-4)
+      .map(
+        (msg) =>
+          `${msg.sender === "user" ? "Utilizator" : "Asistent"}: ${msg.text || "[Tabel Date Medicale]"}`,
+      )
+      .join("\n");
+
     try {
       if (searchMode === "db") {
         // Căutare în baza de date (Graful Medical)
@@ -50,6 +61,7 @@ export default function Chat() {
           body: JSON.stringify({
             message: userMessage,
             identifier: loggedIdentifier,
+            history: recentHistory,
           }),
         });
         const data = await response.json();
@@ -115,7 +127,21 @@ export default function Chat() {
                   dangerouslySetInnerHTML={{ __html: msg.html }}
                 />
               ) : (
-                <div className="leading-relaxed">{msg.text}</div>
+                <div
+                  className={`leading-relaxed ${
+                    msg.sender === "bot"
+                      ? "prose prose-sm max-w-none"
+                      : "whitespace-pre-wrap"
+                  }`}
+                >
+                  {msg.sender === "bot" ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.text}
+                    </ReactMarkdown>
+                  ) : (
+                    msg.text
+                  )}
+                </div>
               )}
             </div>
           </div>

@@ -40,6 +40,7 @@ public class ChatController {
     )
     public ResponseEntity<?> chat(@RequestBody Map<String, String> payload) {
         String message = payload.getOrDefault("message", "").trim();
+        String history = payload.getOrDefault("history", "");
 
         if (message.isEmpty()) {
             return ResponseEntity.badRequest()
@@ -91,8 +92,32 @@ public class ChatController {
                         String uGen = rec.get("gen").isNull() ? "Necunoscut" : rec.get("gen").asString();
                         String uNastere = rec.get("nastere").isNull() ? "Necunoscut" : rec.get("nastere").asString();
                         userInfo = "Nume: " + uName + " | Gen: " + uGen + " | Data Nașterii: " + uNastere;
+
+                        // Aflăm medicii cu acces la dosar
+                        Result docRes = session.run("MATCH (pr:Practitioner)-[:TREATS]->(p:Patient {id: $id}) RETURN coalesce(pr.name, pr.name_family, 'Medic ' + pr.id) AS docName", Map.of("id", identifier));
+                        List<String> docs = new ArrayList<>();
+                        while (docRes.hasNext()) {
+                            docs.add(docRes.next().get("docName").asString());
+                        }
+                        if (!docs.isEmpty()) {
+                            userInfo += " | Medici curanți (cu acces la date): " + String.join(", ", docs);
+                        } else {
+                            userInfo += " | Medici curanți (cu acces la date): Niciunul";
+                        }
                     } else {
                         userInfo = "Nume (Medic): " + uName;
+                        
+                        // Aflăm pacienții acestui medic (doar cei care i-au oferit acces)
+                        Result patRes = session.run("MATCH (pr:Practitioner {id: $id})-[r:TREATS]->(p:Patient) WHERE coalesce(r.hasAccess, true) = true RETURN coalesce(p.name, p.name_family, 'Pacient ID: ' + p.id) AS patName", Map.of("id", identifier));
+                        List<String> patientsList = new ArrayList<>();
+                        while (patRes.hasNext()) {
+                            patientsList.add(patRes.next().get("patName").asString());
+                        }
+                        if (!patientsList.isEmpty()) {
+                            userInfo += " | Pacienți asociați (cu acces permis): " + String.join(", ", patientsList);
+                        } else {
+                            userInfo += " | Pacienți asociați: Niciunul în acest moment.";
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -118,9 +143,9 @@ public class ChatController {
             
             if (listDocsIntent) {
                 String cypher = isPractitioner ?
-                    "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id " +
+                    "MATCH (pr:Practitioner)-[r:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id AND coalesce(r.hasAccess, true) = true " +
                     "AND d.name IS NOT NULL " +
-                    "RETURN DISTINCT d.name AS Nume, p.id AS Pacient, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
+                    "RETURN DISTINCT d.name AS Nume, coalesce(p.name, p.name_family, 'Pacient ' + p.id) AS Pacient, d.uploadDate AS `Data încărcării`, d.releaseDate AS `Data eliberării`, CASE WHEN toLower(d.name) CONTAINS 'upu' THEN 'Fișă UPU' WHEN toLower(d.name) CONTAINS 'analize' THEN 'Analize Laborator' ELSE 'Document Medical' END AS Proprietăți " +
                     "ORDER BY `Data încărcării` DESC LIMIT 20" :
                     "MATCH (p:Patient)-[]->(n)-[:source]->(d:Document) WHERE p.id = $id " +
                     "AND d.name IS NOT NULL " +
@@ -148,10 +173,11 @@ public class ChatController {
             if (msgLower.contains("document") || msgLower.contains("file") || msgLower.contains("fișier") || msgLower.contains("pdf")) {
                 try (Session session = driver.session()) {
                     String docQuery = isPractitioner ?
-                        "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id RETURN DISTINCT d.id AS docId, d.name AS docName" :
+                        "MATCH (pr:Practitioner)-[r:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id AND coalesce(r.hasAccess, true) = true RETURN DISTINCT d.id AS docId, d.name AS docName" :
                         "MATCH (p:Patient)-[]->(n)-[:source]->(d:Document) WHERE p.id = $id RETURN DISTINCT d.id AS docId, d.name AS docName";
 
                     Result docRes = session.run(docQuery, Map.of("id", identifier));
+                    int bestMatchLength = 0;
                     while (docRes.hasNext()) {
                         var record = docRes.next();
                         String dName = record.get("docName").asString();
@@ -160,10 +186,14 @@ public class ChatController {
                         String dNameLower = dName.toLowerCase();
                         String dNameNoExt = dNameLower.replaceAll("\\.(pdf|jpg|png|jpeg)$", "").trim();
 
-                        if (msgLower.contains(dNameLower) || msgLower.contains(dNameNoExt)) {
+                        if (msgLower.contains(dNameLower) && dNameLower.length() > bestMatchLength) {
                             targetDocId = dId;
                             targetDocName = dName;
-                            break;
+                            bestMatchLength = dNameLower.length();
+                        } else if (msgLower.contains(dNameNoExt) && dNameNoExt.length() > bestMatchLength) {
+                            targetDocId = dId;
+                            targetDocName = dName;
+                            bestMatchLength = dNameNoExt.length();
                         }
                     }
                 }
@@ -187,13 +217,16 @@ public class ChatController {
             } else if (msgLower.contains("procedur") || msgLower.contains("operati") || msgLower.contains("operați") || msgLower.contains("interventi") || msgLower.contains("intervenți")) {
                 filterLabels = "['Procedure', 'ProcedureED', 'ProcedureICU']";
                 isCategorySpecific = true;
-            } else if (msgLower.matches("(?i).*\\b(cine sunt|cum mă cheamă|câți ani am|vârsta mea|datele mele)\\b.*")) {
+            } else if (msgLower.matches("(?i).*\\b(cine sunt|cum mă cheamă|câți ani am|vârsta mea|datele mele|acces|medic|doctor)\\b.*") && !msgLower.contains("medicament")) {
                 filterLabels = "[]"; 
+                isCategorySpecific = true;
+            } else if (msgLower.matches("(?i).*\\b(pacient|pacienți|pacienti|comun|asemănare|asemanare|toți|toti|ambii|amândoi|amandoi|diferenț|diferent)\\b.*")) {
+                // Păstrăm toate categoriile medicale dar trecem de pragul de similaritate pentru a aduce afecțiunile tuturor
                 isCategorySpecific = true;
             }
 
             String dbCypher = isPractitioner ?
-                "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient) WHERE pr.id = $id \n" :
+                "MATCH (pr:Practitioner)-[r:TREATS]->(p:Patient) WHERE pr.id = $id AND coalesce(r.hasAccess, true) = true \n" :
                 "MATCH (p:Patient) WHERE p.id = $id \n";
 
             Map<String, Object> queryParams = new java.util.HashMap<>();
@@ -204,19 +237,19 @@ public class ChatController {
                 queryParams.put("docId", targetDocId);
                 queryParams.put("docName", targetDocName);
                 tableTitle = "Extragere din: " + targetDocName;
+                dbCypher += "WHERE labels(n)[0] IN " + filterLabels + " AND n.name IS NOT NULL AND NOT n.name CONTAINS 'Generic' \n";
+                dbCypher += "WITH labels(n)[0] AS Type, n.name AS Name, collect(n)[0] AS node, p, d \n";
+                dbCypher += "RETURN Type, node.name AS Nume, $docName AS Document, coalesce(p.name, p.name_family, 'Pacient ' + p.id) AS Pacient \n";
             } else {
                 dbCypher += "MATCH (p)-[]->(n) \n";
+                dbCypher += "WHERE labels(n)[0] IN " + filterLabels + " AND n.name IS NOT NULL AND NOT n.name CONTAINS 'Generic' \n";
+                dbCypher += "OPTIONAL MATCH (n)-[:source]->(d:Document) \n";
+                dbCypher += "WITH labels(n)[0] AS Type, n.name AS Name, collect(n)[0] AS node, p, d \n";
+                dbCypher += "RETURN Type, node.name AS Nume, coalesce(d.name, 'Sursă externă') AS Document, coalesce(p.name, p.name_family, 'Pacient ' + p.id) AS Pacient \n";
             }
-
-            dbCypher += "WHERE labels(n)[0] IN " + filterLabels + " AND n.name IS NOT NULL AND NOT n.name CONTAINS 'Generic' \n";
-            dbCypher += "WITH labels(n)[0] AS Type, n.name AS Name, collect(n)[0] AS node \n";
-
-            if (targetDocId != null) {
-                dbCypher += "RETURN Type, node.name AS Nume, $docName AS Document \n";
-            } else {
-                dbCypher += "RETURN Type, node.name AS Nume \n";
-            }
-            dbCypher += "LIMIT 200";
+            
+            // Extragem o plajă mai mare de date pentru a nu tăia pacienții în cazul în care primul pacient are sute de afecțiuni
+            dbCypher += "LIMIT 1000";
 
             try (Session session = driver.session()) {
                 Result result = session.run(dbCypher, queryParams);
@@ -244,18 +277,42 @@ public class ChatController {
                 List<Map<String, Object>> filteredRows = new ArrayList<>();
                 for (Map<String, Object> row : rows) {
                     String nume = (String) row.get("Nume");
+                    String pacient = (String) row.get("Pacient");
                     if (queryEmbedding != null && nume != null) {
                         try {
                             float[] numeEmbedding = embeddingModel.embed(nume);
                             double sim = cosineSimilarity(queryEmbedding, numeEmbedding);
                             int percent = (int) Math.round(sim * 100);
                             
+                            // Căutare Hibridă: Verificăm dacă vreun cuvânt cheie (>= 4 litere) din nume se regăsește explicit în întrebare
+                            boolean hasKeywordMatch = false;
+                            String numeClean = nume.toLowerCase().replaceAll("[^a-z0-9\\s]", " ");
+                            for (String w : numeClean.split("\\s+")) {
+                                if (w.length() >= 4 && msgLower.matches(".*\\b" + w + "\\b.*")) {
+                                    hasKeywordMatch = true;
+                                    break;
+                                }
+                            }
+
+                            // Căutare Hibridă: Verificăm dacă medicul a întrebat explicit de un anumit pacient (pe nume)
+                            if (isPractitioner && pacient != null) {
+                                String pacientClean = pacient.toLowerCase().replaceAll("[^a-z0-9\\s]", " ").replace("pacient", "");
+                                for (String w : pacientClean.split("\\s+")) {
+                                    // Folosim minim 3 litere pentru nume de familie scurte (ex: Pop, Doe, Ion)
+                                    if (w.length() >= 3 && msgLower.matches(".*\\b" + w + "\\b.*")) {
+                                        hasKeywordMatch = true;
+                                        break;
+                                    }
+                                }
+                            }
+
                             // Dacă s-a cerut o categorie anume sau un document anume, bypassăm pragul minim. Altfel e 45%.
                             int threshold = (targetDocId != null || isCategorySpecific) ? 0 : 45;
                             
-                            if (percent >= threshold) {
+                            if (percent >= threshold || hasKeywordMatch) {
                                 row.put("Potrivire Semantică", percent + "%");
-                                row.put("scoreRaw", sim);
+                                // Combinăm scorul hibrid cu cel semantic pentru a menține sortarea relevantă la final
+                                row.put("scoreRaw", hasKeywordMatch ? (1.0 + sim) : sim);
                                 filteredRows.add(row);
                             }
                         } catch (Exception e) {
@@ -276,6 +333,11 @@ public class ChatController {
                         (Double) r2.getOrDefault("scoreRaw", 0.0),
                         (Double) r1.getOrDefault("scoreRaw", 0.0)
                 ));
+                
+                // Limităm strict la cele mai relevante 120 de intrări pentru a nu depăși contextul maxim acceptat de LLM
+                if (rows.size() > 120) {
+                    rows = rows.subList(0, 120);
+                }
 
                 // Construim textul pentru LLM punând primele cele mai relevante date
                 contextBuilder.setLength(0);
@@ -301,14 +363,24 @@ public class ChatController {
                 contextData = contextData.substring(0, 15000) + "\n... [DATE TRUNCHIATE DIN CAUZA LIMITELOR DE DIMENSIUNE] ...";
             }
 
+            String disclaimerRule = isPractitioner 
+                ? "Dacă o informație lipsește, menționează că nu există în dosar. Deoarece vorbești cu un medic, NU recomanda sub nicio formă un consult medical la final.\n\n" 
+                : "Dacă o informație lipsește, explică frumos că nu există în dosar. Recomandă un consult medical la final.\n\n";
+
             ragPrompt = "Ești un asistent medical AI profesionist și empatic. Fii concis, dar natural și prietenos în exprimare.\n" +
-                               "Dacă utilizatorul pune întrebări personale (ex: cine sunt, vârsta mea), răspunde folosind exclusiv DATELE PERSONALE.\n" +
-                               "Dacă pune întrebări medicale, răspunde clar și direct la întrebare (ex: 'Da, în dosar apar menționate...', 'Nu am găsit informații despre...').\n" +
-                               "Afișează informațiile medicale cu liniuțe. NU menționa procentajele de 'Potrivire Semantică' sau ID-urile tehnice în răspunsul tău text.\n" +
-                               "Dacă o informație lipsește, explică frumos că nu există în dosar. Recomandă un consult la final.\n\n" +
+                               "Dacă utilizatorul pune întrebări personale (ex: cine sunt, vârsta mea, cine are acces la date, cine sunt pacienții mei), răspunde folosind exclusiv DATELE PERSONALE.\n" +
+                               "Dacă pune întrebări medicale, ÎNCEPE MEREU răspunsul cu o afirmație clară și directă (ex: 'Da, pacienta are analize de urină...', 'Nu, nu am găsit...'). Abia apoi detaliază rezultatele.\n" +
+                               "FORMATARE MARKDOWN STRICTĂ: Dacă afișezi date medicale, folosește OBLIGATORIU o listă cu marcatori ('- '). Lasă OBLIGATORIU un rând liber (dublu ENTER) înainte de a începe lista, dar și între numele pacientului și listă. NU afișa valori goale sau fără rezultat (ex: ignoră 'Nitrite: -' dacă nu are nicio valoare). NU menționa ID-uri tehnice sau scoruri.\n" +
+                               "REGULĂ DE LIMBĂ: Răspunde OBLIGATORIU în aceeași limbă în care a fost formulată ÎNTREBAREA. Dacă întrebarea e în română, răspunde în română (traducând datele extrase din engleză înapoi în română). Dacă e în engleză, răspunde în engleză.\n" +
+                               "ATENȚIE MAXIMĂ LA NUMERE: Când prezinți valori medicale (rezultate analize, doze), copiază-le EXACT așa cum apar în DATE MEDICALE GĂSITE. Nu inversa cifrele (ex: 3.87 NU trebuie să devină 3.78) și nu rotunji valorile.\n" +
+                               "SEPARARE PACIENȚI: Dacă ești medic și ai date de la mai mulți pacienți, fii foarte atent la coloana 'Pacient' din datele găsite. NU amesteca analizele/afecțiunile între ei. Atribuie fiecare diagnostic strict pacientului indicat.\n" +
+                               "SURSĂ DATE: Dacă utilizatorul te întreabă din ce document provin anumite date, folosește informația din coloana 'Document' a tabelului extras sau uită-te în Istoricul Conversației pentru a face legătura.\n" +
+                               "DEDUCȚIE MEDICALĂ & FOLLOW-UP: Când ești întrebat de ce s-a dat un tratament, NU răspunde ezitant (ex: 'nu am găsit direct', 'putem deduce'). Fii direct, sigur și profesionist. Corelează automat medicamentul cu bolile sau analizele (inclusiv din ISTORICUL RECENT) și explică clar: 'Medicamentul X a fost prescris pentru a trata afecțiunea Y'.\n" +
+                               disclaimerRule +
+                               "ISTORICUL RECENT AL CONVERSAȚIEI:\n" + (history.isEmpty() ? "Niciun istoric." : history) + "\n\n" +
                                "DATELE PERSONALE ALE UTILIZATORULUI:\n" + userInfo + "\n\n" +
-                               "DATE MEDICALE GĂSITE:\n" + (rows.isEmpty() ? "Nicio informație medicală extrasă." : contextData) + "\n\n" +
-                               "ÎNTREBARE: " + message;
+                               "DATE MEDICALE GĂSITE (Pentru întrebarea curentă):\n" + (rows.isEmpty() ? "Nicio informație nouă extrasă." : contextData) + "\n\n" +
+                               "ÎNTREBARE NOUĂ: " + message;
             try {
                 aiResponse = chatClient.prompt().user(ragPrompt).call().content();
             } catch (Exception e) {

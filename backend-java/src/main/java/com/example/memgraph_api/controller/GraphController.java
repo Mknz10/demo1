@@ -60,7 +60,9 @@ public class GraphController {
             Path filePath = uploadDir.resolve(fileName);
             Files.copy(file.getInputStream(), filePath, StandardCopyOption.REPLACE_EXISTING);
 
-            llmExtractionService.processPdfAndStore(file, identifier);
+            String docId = llmExtractionService.uploadDocumentOnly(file, identifier);
+            llmExtractionService.processDocumentWithLlm(docId, identifier);
+
             return ResponseEntity.ok("File processed and graph updated successfully!");
         } catch (Exception e) {
             return ResponseEntity.internalServerError()

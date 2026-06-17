@@ -6,10 +6,16 @@ import {
   MessageSquare,
   FileText,
   Eye,
+  User,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
-export default function MainPage({ isUploading, handleUpload, role }) {
+export default function MainPage({
+  isUploading,
+  handleUpload,
+  role,
+  graphData,
+}) {
   const navigate = useNavigate();
   const loggedIdentifier = localStorage.getItem("loggedIdentifier");
 
@@ -38,6 +44,26 @@ export default function MainPage({ isUploading, handleUpload, role }) {
       fetchDocs();
     }
   }, [role, loggedIdentifier, isUploading]);
+
+  // Extragem pacienții asociați cu acest medic din datele grafului
+  const patients = graphData?.nodes?.filter((n) => n.label === "Patient") || [];
+
+  const getPatientName = (props) => {
+    if (!props) return "Pacient Necunoscut";
+    let lastName = props.lastName || props.name_family || "";
+    let firstName = props.firstName || "";
+    if (!firstName && Array.isArray(props.name_given)) {
+      firstName = props.name_given.join(" ");
+    }
+    if (props.name && Array.isArray(props.name)) {
+      const nameObj =
+        props.name.find((n) => n.use === "official") || props.name[0];
+      lastName = nameObj.family || lastName;
+      if (Array.isArray(nameObj.given)) firstName = nameObj.given.join(" ");
+    }
+    if (!firstName && !lastName) return props.id || "Pacient Necunoscut";
+    return `${firstName} ${lastName}`.trim();
+  };
 
   return (
     <div className="min-h-[calc(100vh-73px)] bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-100 text-gray-900 font-sans flex flex-col">
@@ -140,31 +166,68 @@ export default function MainPage({ isUploading, handleUpload, role }) {
 
           {/* Documents Section for Practitioner */}
           {role === "Practitioner" && (
-            <div className="w-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 flex flex-col items-center hover:shadow-2xl transition">
-              <button
-                onClick={() => navigate("/practitioner-documents")}
-                className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-500 hover:from-blue-500 hover:to-indigo-400 text-white py-4 px-6 rounded-2xl font-semibold transition shadow-md"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="w-6 h-6"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
+            <div className="w-full flex flex-col gap-6">
+              <div className="w-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 flex flex-col items-center hover:shadow-2xl transition">
+                <button
+                  onClick={() => navigate("/practitioner-documents")}
+                  className="w-full flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-500 hover:from-blue-500 hover:to-indigo-400 text-white py-4 px-6 rounded-2xl font-semibold transition shadow-md"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-                Gestionează Documente Pacienți
-              </button>
-              <p className="text-sm text-gray-500 mt-4 text-center">
-                Vezi istoricul documentelor și fișierele PDF pentru pacienții
-                tăi.
-              </p>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className="w-6 h-6"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                    />
+                  </svg>
+                  Gestionează Documente Pacienți
+                </button>
+                <p className="text-sm text-gray-500 mt-4 text-center">
+                  Vezi istoricul documentelor și fișierele PDF pentru pacienții
+                  tăi.
+                </p>
+              </div>
+
+              {/* Lista Pacienți pentru Medic */}
+              <div className="w-full bg-white/70 backdrop-blur-xl border border-white/40 shadow-xl rounded-3xl p-6 flex flex-col hover:shadow-2xl transition">
+                <h3 className="text-lg font-bold text-indigo-800 mb-4 flex items-center gap-2">
+                  <User className="w-5 h-5 text-indigo-600" />
+                  Pacienții Tăi ({patients.length})
+                </h3>
+
+                {patients.length === 0 ? (
+                  <div className="text-sm text-gray-500 text-center py-6">
+                    Nu aveți pacienți asociați momentan.
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-3 overflow-y-auto max-h-[300px] pr-1 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:bg-indigo-200 [&::-webkit-scrollbar-thumb]:rounded-full">
+                    {patients.map((patient, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-3 p-3 bg-white/60 border border-indigo-100 rounded-2xl shadow-sm hover:border-indigo-300 hover:bg-white transition-all group"
+                      >
+                        <div className="bg-indigo-100 p-2.5 rounded-full text-indigo-600 shadow-sm shrink-0">
+                          <User className="w-5 h-5" />
+                        </div>
+                        <div className="flex flex-col overflow-hidden">
+                          <span className="text-sm font-bold text-gray-800 truncate group-hover:text-indigo-700 transition-colors">
+                            {getPatientName(patient.properties)}
+                          </span>
+                          <span className="text-xs text-gray-500 font-medium truncate">
+                            ID: {patient.properties?.id || "N/A"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

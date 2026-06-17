@@ -80,12 +80,6 @@ public class AuthController {
         String familyName = extractFamilyName(payload);
         String gender = getString(payload, "gender");
         String birthDate = getString(payload, "birthDate");
-        String rawPractitionerId = getString(payload, "practitionerId");
-
-        // Fallback to the default Practitioner if the frontend doesn't send it yet
-        final String practitionerId = (rawPractitionerId == null || rawPractitionerId.isBlank()) 
-                ? "1234567890" 
-                : rawPractitionerId.trim();
 
         if (identifier == null) {
             return ResponseEntity.badRequest().body("Missing identifier");
@@ -122,16 +116,6 @@ public class AuthController {
                             "birthDate", birthDate,
                             "given", givenName,
                             "family", familyName
-                    )
-                ).consume();
-
-                tx.run(
-                    "MATCH (pr:Practitioner) WHERE pr.id = $prId " +
-                    "MATCH (p:Patient) WHERE p.id = $pid " +
-                    "MERGE (pr)-[:TREATS]->(p)",
-                    Values.parameters(
-                            "prId", practitionerId,
-                            "pid", identifier
                     )
                 ).consume();
 
@@ -189,6 +173,54 @@ public class AuthController {
             return ResponseEntity.ok(enable ? "Access enabled" : "Access disabled");
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("Database error");
+        }
+    }
+
+    // ================= PER-DOCTOR DATA ACCESS TOGGLE =================
+    @GetMapping("/doctors-access")
+    public ResponseEntity<List<Map<String, Object>>> getDoctorsAccess(@RequestParam String patientId) {
+        List<Map<String, Object>> doctors = new java.util.ArrayList<>();
+        try (Session session = driver.session()) {
+            String cypher = "MATCH (pr:Practitioner) " +
+                            "OPTIONAL MATCH (pr)-[r:TREATS]->(p:Patient {id: $patientId}) " +
+                            "RETURN pr.id AS id, coalesce(pr.name, pr.name_family, 'Medic ID: ' + pr.id) AS name, " +
+                            "CASE WHEN r IS NOT NULL THEN coalesce(r.hasAccess, true) ELSE false END AS hasAccess";
+                            
+            Result result = session.run(cypher, Values.parameters("patientId", patientId));
+            while (result.hasNext()) {
+                var record = result.next();
+                doctors.add(Map.of(
+                    "id", record.get("id").asString(),
+                    "name", record.get("name").asString(),
+                    "hasAccess", record.get("hasAccess").asBoolean()
+                ));
+            }
+            return ResponseEntity.ok(doctors);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    @PostMapping("/toggle-doctor-access")
+    public ResponseEntity<?> toggleDoctorAccess(@RequestBody Map<String, Object> payload) {
+        String patientId = getString(payload, "patientId");
+        String doctorId = getString(payload, "doctorId");
+        
+        Object enableObj = payload.get("enable");
+        Boolean enable = (enableObj instanceof Boolean) ? (Boolean) enableObj 
+                       : (enableObj != null ? Boolean.parseBoolean(enableObj.toString()) : null);
+
+        if (patientId == null || doctorId == null || enable == null) return ResponseEntity.badRequest().body("Missing parameters");
+
+        try (Session session = driver.session()) {
+            String cypher = "MATCH (pr:Practitioner {id: $doctorId}) " +
+                            "MATCH (p:Patient {id: $patientId}) " +
+                            "MERGE (pr)-[r:TREATS]->(p) " +
+                            "SET r.hasAccess = $enable";
+            session.run(cypher, Values.parameters("patientId", patientId, "doctorId", doctorId, "enable", enable));
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 
