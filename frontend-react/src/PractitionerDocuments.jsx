@@ -1,33 +1,20 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileText, ArrowLeft, Eye, Search } from "lucide-react";
+import { useCachedDocuments } from "./useCachedDocuments";
+import { getOrDownloadDocument } from "./db";
 
 export default function PractitionerDocuments() {
   const navigate = useNavigate();
   const loggedIdentifier = localStorage.getItem("loggedIdentifier");
 
-  const [documents, setDocuments] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
 
-  const fetchData = async () => {
-    setIsLoading(true);
-    try {
-      // Fetch documentele tuturor pacienților doctorului
-      const dRes = await fetch(
-        `http://localhost:8080/api/documents/practitioner/${loggedIdentifier}`,
-      );
-      if (dRes.ok) setDocuments(await dRes.json());
-    } catch (error) {
-      console.error("Failed to fetch data", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (loggedIdentifier) fetchData();
-  }, [loggedIdentifier]);
+  // Folosim arhitectura hibridă: ia lista imediat din DB, verifică în fundal
+  const { documents, isLoading } = useCachedDocuments(
+    loggedIdentifier,
+    "practitioner",
+  );
 
   const filteredDocuments = documents.filter((doc) => {
     const searchLower = searchTerm.toLowerCase();
@@ -38,6 +25,17 @@ export default function PractitionerDocuments() {
       doc.patientId?.toLowerCase().includes(searchLower)
     );
   });
+
+  // Funcția care aduce documentul fizic instantaneu (dacă există)
+  const handleViewPDF = async (docId) => {
+    try {
+      const objectUrl = await getOrDownloadDocument(docId);
+      window.open(objectUrl, "_blank");
+    } catch (error) {
+      console.error("Eroare la vizualizarea documentului PDF:", error);
+      alert("Nu am putut deschide documentul. Serverul e indisponibil.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-sky-100 p-8 font-sans text-gray-900">
@@ -121,12 +119,7 @@ export default function PractitionerDocuments() {
                       </td>
                       <td className="p-4 text-center">
                         <button
-                          onClick={() =>
-                            window.open(
-                              `http://localhost:8080/api/documents/download/${doc.id}`,
-                              "_blank",
-                            )
-                          }
+                          onClick={() => handleViewPDF(doc.id)}
                           className="inline-flex items-center gap-2 px-3 py-1.5 bg-teal-100 text-teal-700 hover:bg-teal-200 rounded-lg text-sm font-semibold transition"
                         >
                           <Eye className="w-4 h-4" /> Vezi PDF

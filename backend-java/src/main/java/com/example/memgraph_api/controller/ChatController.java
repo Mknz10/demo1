@@ -363,9 +363,9 @@ public class ChatController {
                 contextData = contextData.substring(0, 15000) + "\n... [DATE TRUNCHIATE DIN CAUZA LIMITELOR DE DIMENSIUNE] ...";
             }
 
-            String disclaimerRule = isPractitioner 
-                ? "Dacă o informație lipsește, menționează că nu există în dosar. Deoarece vorbești cu un medic, NU recomanda sub nicio formă un consult medical la final.\n\n" 
-                : "Dacă o informație lipsește, explică frumos că nu există în dosar. Recomandă un consult medical la final.\n\n";
+            String disclaimerRule = isPractitioner
+                ? "Dacă o informație lipsește, menționează că nu există în datele disponibile. Deoarece vorbești cu un medic, nu recomanda consult medical la final și nu formula concluzii clinice nesusținute de date.\n\n"
+                : "Dacă o informație lipsește, explică faptul că nu există în datele disponibile. Răspunsul are rol informativ și nu înlocuiește consultarea unui medic.\n\n";
 
             ragPrompt = "Ești un asistent medical AI profesionist și empatic. Fii concis, dar natural și prietenos în exprimare.\n" +
                                "Dacă utilizatorul pune întrebări personale (ex: cine sunt, vârsta mea, cine are acces la date, cine sunt pacienții mei), răspunde folosind exclusiv DATELE PERSONALE.\n" +
@@ -375,8 +375,17 @@ public class ChatController {
                                "ATENȚIE MAXIMĂ LA NUMERE: Când prezinți valori medicale (rezultate analize, doze), copiază-le EXACT așa cum apar în DATE MEDICALE GĂSITE. Nu inversa cifrele (ex: 3.87 NU trebuie să devină 3.78) și nu rotunji valorile.\n" +
                                "SEPARARE PACIENȚI: Dacă ești medic și ai date de la mai mulți pacienți, fii foarte atent la coloana 'Pacient' din datele găsite. NU amesteca analizele/afecțiunile între ei. Atribuie fiecare diagnostic strict pacientului indicat.\n" +
                                "SURSĂ DATE: Dacă utilizatorul te întreabă din ce document provin anumite date, folosește informația din coloana 'Document' a tabelului extras sau uită-te în Istoricul Conversației pentru a face legătura.\n" +
-                               "DEDUCȚIE MEDICALĂ & FOLLOW-UP: Când ești întrebat de ce s-a dat un tratament, NU răspunde ezitant (ex: 'nu am găsit direct', 'putem deduce'). Fii direct, sigur și profesionist. Corelează automat medicamentul cu bolile sau analizele (inclusiv din ISTORICUL RECENT) și explică clar: 'Medicamentul X a fost prescris pentru a trata afecțiunea Y'.\n" +
-                               disclaimerRule +
+                               "SEPARAREA SURSELOR: Datele pot proveni din setul MIMIC/FHIR sau din documente medicale încărcate ulterior. " +
+                               "Nu amesteca informațiile provenite din surse diferite dacă nu există o legătură clară în datele returnate. " +
+                               "Dacă sursa este necunoscută sau apare ca 'Sursă externă', menționează că informația provine din datele disponibile în graf, fără a inventa documentul sursă.\n" +
+                               "SEMANTICA ÎNTREBĂRII: Respectă cu atenție formularea utilizatorului. " +
+                               "Dacă întrebarea conține 'și', 'atât... cât și' sau 'ambele', tratează condițiile ca fiind cumulative. " +
+                               "Dacă întrebarea conține 'sau' sau 'oricare', tratează condițiile ca alternative. " +
+                               "Nu transforma o cerință cumulativă într-una alternativă.\n" +
+                               "DEDUCȚIE MEDICALĂ: Nu presupune cauzalități medicale care nu apar explicit în datele găsite. " +
+                               "Dacă utilizatorul întreabă de ce a fost administrat un tratament, explică doar informațiile susținute de contextul disponibil. " +
+                               "Dacă nu există o legătură clară între diagnostic, episod clinic și medicație, spune că tratamentul apare în dosar, dar că aplicația nu poate confirma motivul administrării doar pe baza datelor disponibile. " +
+                               "Nu formula diagnostice noi și nu recomanda tratamente.\n" +                               disclaimerRule +
                                "ISTORICUL RECENT AL CONVERSAȚIEI:\n" + (history.isEmpty() ? "Niciun istoric." : history) + "\n\n" +
                                "DATELE PERSONALE ALE UTILIZATORULUI:\n" + userInfo + "\n\n" +
                                "DATE MEDICALE GĂSITE (Pentru întrebarea curentă):\n" + (rows.isEmpty() ? "Nicio informație nouă extrasă." : contextData) + "\n\n" +

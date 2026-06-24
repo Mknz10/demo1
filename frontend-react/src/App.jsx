@@ -8,6 +8,7 @@ import MainPage from "./MainPage";
 import Register from "./Register";
 import Chat from "./Chat";
 import PractitionerDocuments from "./PractitionerDocuments";
+import { clearLocalFirstData } from "./db";
 
 export default function App() {
   const navigate = useNavigate();
@@ -63,7 +64,10 @@ export default function App() {
     setIsLoggedIn(true);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Curățăm documentele PDF extrase (pentru confidențialitate)
+    await clearLocalFirstData();
+
     localStorage.removeItem("isLoggedIn");
     localStorage.removeItem("loggedIdentifier");
     setIsLoggedIn(false);
