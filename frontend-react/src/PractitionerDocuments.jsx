@@ -1,8 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileText, ArrowLeft, Eye, Search } from "lucide-react";
 import { useCachedDocuments } from "./useCachedDocuments";
 import { getOrDownloadDocument } from "./db";
+import { Client } from "@stomp/stompjs";
+import SockJS from "sockjs-client";
+import toast from "react-hot-toast";
 
 export default function PractitionerDocuments() {
   const navigate = useNavigate();
@@ -11,10 +14,60 @@ export default function PractitionerDocuments() {
   const [searchTerm, setSearchTerm] = useState("");
 
   // Folosim arhitectura hibridă: ia lista imediat din DB, verifică în fundal
-  const { documents, isLoading } = useCachedDocuments(
+  const { documents, setDocuments, isLoading, refetch } = useCachedDocuments(
     loggedIdentifier,
     "practitioner",
   );
+
+  // WebSocket logic for real-time document list updates
+  useEffect(() => {
+    if (!loggedIdentifier) return;
+
+    const client = new Client({
+      webSocketFactory: () => new SockJS("http://localhost:8080/ws"),
+      reconnectDelay: 5000,
+      onConnect: () => {
+        console.log("[WebSocket Docs] Connected.");
+        client.subscribe(`/topic/doctor/${loggedIdentifier}`, (message) => {
+          const notification = JSON.parse(message.body);
+          console.log("[WebSocket Docs] Received:", notification);
+
+          if (notification.type === "ACCESS_REVOKED") {
+            const patientName =
+              notification.details?.patientName ||
+              `Pacient ID: ${notification.details.patientId}`;
+            toast.error(
+              `Acces revocat. Documentele pentru ${patientName} au fost eliminate.`,
+            );
+
+            // Eliminăm documentele pacientului din listă
+            setDocuments((currentDocs) =>
+              currentDocs.filter(
+                (doc) => doc.patientId !== notification.details.patientId,
+              ),
+            );
+          } else if (notification.type === "ACCESS_GRANTED") {
+            const patientName =
+              notification.patient?.name ||
+              `Pacient ID: ${notification.patient.id}`;
+            toast.success(
+              `Acces permis de ${patientName}. Se actualizează lista de documente.`,
+            );
+            // Re-încărcăm lista de documente pentru a include și cele noi
+            refetch();
+          }
+        });
+      },
+    });
+
+    client.activate();
+
+    return () => {
+      if (client.active) {
+        client.deactivate();
+      }
+    };
+  }, [loggedIdentifier, refetch, setDocuments]);
 
   const filteredDocuments = documents.filter((doc) => {
     const searchLower = searchTerm.toLowerCase();

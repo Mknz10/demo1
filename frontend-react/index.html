@@ -5,6 +5,13 @@
     <link rel="icon" type="image/svg+xml" href="/health.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Health</title>
+    <script>
+      // Polyfill pentru 'global' necesar de sockjs-client în mediile Vite/modern-build.
+      // Acesta trebuie să fie în <head> pentru a se executa înaintea modulelor JS.
+      if (typeof global === "undefined") {
+        var global = window;
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

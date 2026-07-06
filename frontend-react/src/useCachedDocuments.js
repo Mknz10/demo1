@@ -1,62 +1,73 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { db } from "./db";
 
 export function useCachedDocuments(identifier, role = "patient") {
   const [documents, setDocuments] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
+  // Funcție separată pentru revalidarea datelor în fundal (folosită de `refetch`)
+  const revalidate = useCallback(async () => {
     if (!identifier) return;
-    let isMounted = true;
+    console.log("[Cache] Revalidating documents in background...");
+    try {
+      const endpoint =
+        role === "practitioner"
+          ? `http://localhost:8080/api/documents/practitioner/${identifier}`
+          : `http://localhost:8080/api/documents/patient/${identifier}`;
 
-    const fetchDocuments = async () => {
-      // ETAPA 1: CACHE (Latență 0)
-      // Extragem instant lista veche din memoria browser-ului
-      const cachedDocs = await db.documentsList
-        .where("ownerId")
-        .equals(identifier)
-        .toArray();
-      if (isMounted && cachedDocs.length > 0) {
-        setDocuments(cachedDocs);
-        setIsLoading(false); // Dezactivăm "loading-ul", interfața se încarcă instant
+      const res = await fetch(endpoint);
+      if (res.ok) {
+        const freshDocs = await res.json();
+        const docsWithOwner = freshDocs.map((doc) => ({
+          ...doc,
+          ownerId: identifier,
+        }));
+        await db.documentsList.bulkPut(docsWithOwner);
+        setDocuments(freshDocs); // Actualizăm starea cu datele proaspete
       }
-
-      // ETAPA 2: REVALIDARE ÎN FUNDAL
-      // Facem request pe ascuns pentru a vedea dacă au apărut documente noi pe server
-      try {
-        const endpoint =
-          role === "practitioner"
-            ? `http://localhost:8080/api/documents/practitioner/${identifier}`
-            : `http://localhost:8080/api/documents/patient/${identifier}`;
-
-        const res = await fetch(endpoint);
-        if (res.ok) {
-          const freshDocs = await res.json();
-
-          if (isMounted) {
-            setDocuments(freshDocs);
-            setIsLoading(false);
-          }
-
-          // ETAPA 3: SINCRONIZARE CACHE
-          // Adăugăm 'ownerId' pentru a ști ale cui sunt documentele și actualizăm baza de date locală
-          const docsWithOwner = freshDocs.map((doc) => ({
-            ...doc,
-            ownerId: identifier,
-          }));
-          await db.documentsList.bulkPut(docsWithOwner);
-        }
-      } catch (err) {
-        console.error("Mod Offline / Server indisponibil:", err);
-        if (isMounted) setIsLoading(false);
-      }
-    };
-
-    fetchDocuments();
-    return () => {
-      isMounted = false;
-    };
+    } catch (err) {
+      console.error("Mod Offline / Server indisponibil la revalidare:", err);
+    }
   }, [identifier, role]);
 
-  return { documents, isLoading };
+  // Hook pentru încărcarea inițială (Stale-While-Revalidate)
+  useEffect(() => {
+    const initialFetch = async () => {
+      // Mutăm verificarea aici. Toate setările de stare se fac în acest bloc asincron.
+      if (!identifier) {
+        setDocuments([]);
+        setIsLoading(false);
+        return;
+      }
+
+      // ETAPA 1: Încercăm să încărcăm din cache
+      try {
+        setIsLoading(true); // Setăm loading doar dacă avem un identifier
+        const cachedDocs = await db.documentsList
+          .where("ownerId")
+          .equals(identifier)
+          .toArray();
+        if (cachedDocs.length > 0) {
+          console.log("[Cache] Loaded documents from IndexedDB.");
+          setDocuments(cachedDocs);
+        }
+      } catch (err) {
+        console.error("Eroare la citirea din cache:", err);
+      }
+
+      // ETAPA 2: Revalidăm (sau facem primul fetch) cu serverul
+      await revalidate();
+
+      setIsLoading(false);
+    };
+
+    initialFetch();
+  }, [identifier, role, revalidate]);
+
+  return {
+    documents,
+    setDocuments,
+    isLoading,
+    refetch: revalidate,
+  };
 }

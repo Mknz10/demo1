@@ -17,15 +17,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.example.memgraph_api.service.WebSocketNotificationService;
+
 @RestController
 @RequestMapping("/auth")
 @CrossOrigin(origins = "*")
 public class AuthController {
 
     private final Driver driver;
+    private final WebSocketNotificationService notificationService;
 
-    public AuthController(Driver driver) {
+
+    public AuthController(Driver driver, WebSocketNotificationService notificationService) {
         this.driver = driver;
+        this.notificationService = notificationService;
     }
 
     // ================= LOGIN =================
@@ -215,10 +220,82 @@ public class AuthController {
         try (Session session = driver.session()) {
             String cypher = "MATCH (pr:Practitioner {id: $doctorId}) " +
                             "MATCH (p:Patient {id: $patientId}) " +
-                            "MERGE (pr)-[r:TREATS]->(p) " +
-                            "SET r.hasAccess = $enable";
+                            (enable 
+                                ? "MERGE (pr)-[r:TREATS]->(p) SET r.hasAccess = true"
+                                : "MATCH (pr)-[r:TREATS]->(p) DELETE r"
+                            );
+            
+            // Executăm mai întâi query-ul principal
             session.run(cypher, Values.parameters("patientId", patientId, "doctorId", doctorId, "enable", enable));
+
+            // Apoi trimitem notificarea corespunzătoare
+            if (enable) {
+                // Când se acordă accesul, trimitem detaliile pacientului pentru adăugare în listă
+                Result patientResult = session.run(
+                    "MATCH (p:Patient {id: $patientId}) " +
+                    "RETURN p.id AS id, " +
+                    "       coalesce(p.name, p.name_family, 'Pacient ID: ' + p.id) AS name, " +
+                    "       p.name_family AS name_family, " +
+                    "       p.name_given AS name_given",
+                    Values.parameters("patientId", patientId)
+                );
+                if (patientResult.hasNext()) {
+                    var record = patientResult.next();
+                    Map<String, Object> patientDetails = record.asMap();
+                    notificationService.notifyDoctorOfAccessGranted(doctorId, patientDetails);
+                }
+            } else {
+                // Când se revocă accesul, trimitem doar ID-ul pentru eliminare
+                // MODIFICARE: Preluăm și numele pacientului pentru o notificare mai clară
+                Result patientResult = session.run(
+                    "MATCH (p:Patient {id: $patientId}) " +
+                    "RETURN coalesce(p.name, p.name_family, 'Pacient ID: ' + p.id) AS name",
+                    Values.parameters("patientId", patientId)
+                );
+                String patientName = "Un pacient";
+                if (patientResult.hasNext()) {
+                    patientName = patientResult.next().get("name").asString();
+                }
+                // Trimitem un obiect mai complex, similar cu cel de la acordare
+                Map<String, String> details = Map.of(
+                    "patientId", patientId, "patientName", patientName
+                );
+                notificationService.notifyDoctorOfAccessChange(doctorId, details);
+            }
+
             return ResponseEntity.ok().build();
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    @GetMapping("/doctor-patients")
+    public ResponseEntity<List<Map<String, Object>>> getDoctorPatients(@RequestParam String doctorId) {
+        List<Map<String, Object>> patients = new java.util.ArrayList<>();
+
+        try (Session session = driver.session()) {
+            String cypher =
+                    "MATCH (pr:Practitioner {id: $doctorId})-[r:TREATS]->(p:Patient) " +
+                    "RETURN p.id AS id, " +
+                    "       coalesce(p.name, p.name_family, 'Pacient ID: ' + p.id) AS name, " +
+                    "       p.name_family AS name_family, " +
+                    "       p.name_given AS name_given";
+
+            Result result = session.run(cypher, Values.parameters("doctorId", doctorId));
+
+            while (result.hasNext()) {
+                var record = result.next();
+
+                patients.add(Map.of(
+                        "id", record.get("id").isNull() ? "" : record.get("id").asString(),
+                        "name", record.get("name").isNull() ? "" : record.get("name").asString(),
+                        "name_family", record.get("name_family").isNull() ? "" : record.get("name_family").asString(),
+                        "name_given", record.get("name_given").isNull() ? List.of() : record.get("name_given").asList()
+                ));
+            }
+
+            return ResponseEntity.ok(patients);
+
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }

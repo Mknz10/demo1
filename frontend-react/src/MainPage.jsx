@@ -9,18 +9,18 @@ import {
   User,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { Client } from "@stomp/stompjs";
+import SockJS from "sockjs-client";
+import toast from "react-hot-toast";
 
-export default function MainPage({
-  isUploading,
-  handleUpload,
-  role,
-  graphData,
-}) {
+export default function MainPage({ isUploading, handleUpload, role }) {
   const navigate = useNavigate();
   const loggedIdentifier = localStorage.getItem("loggedIdentifier");
 
   const [patientDocs, setPatientDocs] = useState([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
+  const [patients, setPatients] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Fetch patient's documents automatically
   useEffect(() => {
@@ -45,8 +45,99 @@ export default function MainPage({
     }
   }, [role, loggedIdentifier, isUploading]);
 
-  // Extragem pacienții asociați cu acest medic din datele grafului
-  const patients = graphData?.nodes?.filter((n) => n.label === "Patient") || [];
+  // Combined useEffect for Practitioner logic
+  useEffect(() => {
+    // This effect should only run for Practitioners
+    if (role !== "Practitioner" || !loggedIdentifier) {
+      return;
+    }
+
+    // 1. Fetch initial list of patients
+    const fetchDoctorPatients = async () => {
+      setIsLoading(true);
+      try {
+        const res = await fetch(
+          `http://localhost:8080/auth/doctor-patients?doctorId=${loggedIdentifier}`,
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+
+          const formattedPatients = data.map((p) => ({
+            label: "Patient",
+            properties: {
+              id: p.id,
+              name: p.name,
+              name_family: p.name_family,
+              name_given: p.name_given,
+            },
+          }));
+
+          setPatients(formattedPatients);
+        }
+      } catch (err) {
+        console.error("Eroare la încărcarea pacienților medicului:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchDoctorPatients();
+
+    // 2. Setup WebSocket connection
+    const client = new Client({
+      webSocketFactory: () => new SockJS("http://localhost:8080/ws"),
+      reconnectDelay: 5000,
+      onConnect: () => {
+        console.log("[WebSocket] Connected to server.");
+        // Subscribe to the doctor-specific topic
+        client.subscribe(`/topic/doctor/${loggedIdentifier}`, (message) => {
+          const notification = JSON.parse(message.body);
+          console.log("[WebSocket] Received notification:", notification);
+
+          if (notification.type === "ACCESS_REVOKED") {
+            const patientName =
+              notification.details?.patientName ||
+              `Pacient ID: ${notification.details.patientId}`;
+            toast.error(`${patientName} a revocat accesul la date.`);
+
+            // Remove the patient from the list in real-time
+            setPatients((currentPatients) =>
+              currentPatients.filter(
+                (p) => p.properties.id !== notification.details.patientId,
+              ),
+            );
+          } else if (notification.type === "ACCESS_GRANTED") {
+            const patientName =
+              notification.patient?.name ||
+              `Pacient ID: ${notification.patient.id}`;
+            toast.success(`${patientName} a permis accesul la date.`);
+
+            // Add the new patient to the list in real-time
+            const newPatient = {
+              label: "Patient",
+              properties: notification.patient,
+            };
+            setPatients((currentPatients) => [...currentPatients, newPatient]);
+          }
+        });
+      },
+      onStompError: (frame) => {
+        console.error("Broker reported error: " + frame.headers["message"]);
+        console.error("Additional details: " + frame.body);
+      },
+    });
+
+    client.activate();
+
+    // 3. Cleanup function
+    return () => {
+      if (client.active) {
+        console.log("[WebSocket] Deactivating client on component unmount.");
+        client.deactivate();
+      }
+    };
+  }, [role, loggedIdentifier]); // This effect depends only on role and identifier
 
   const getPatientName = (props) => {
     if (!props) return "Pacient Necunoscut";
@@ -201,7 +292,11 @@ export default function MainPage({
                   Pacienții Tăi ({patients.length})
                 </h3>
 
-                {patients.length === 0 ? (
+                {isLoading ? (
+                  <div className="text-sm text-gray-500 text-center py-6 animate-pulse">
+                    Se încarcă pacienții...
+                  </div>
+                ) : patients.length === 0 ? (
                   <div className="text-sm text-gray-500 text-center py-6">
                     Nu aveți pacienți asociați momentan.
                   </div>
@@ -220,7 +315,10 @@ export default function MainPage({
                             {getPatientName(patient.properties)}
                           </span>
                           <span className="text-xs text-gray-500 font-medium truncate">
-                            ID: {patient.properties?.id || "N/A"}
+                            ID:{" "}
+                            {patient.properties?.identifier ||
+                              patient.properties?.id ||
+                              "N/A"}
                           </span>
                         </div>
                       </div>

@@ -9,6 +9,7 @@ import Register from "./Register";
 import Chat from "./Chat";
 import PractitionerDocuments from "./PractitionerDocuments";
 import { clearLocalFirstData } from "./db";
+import { Toaster } from "react-hot-toast";
 
 export default function App() {
   const navigate = useNavigate();
@@ -148,6 +149,9 @@ export default function App() {
 
   return (
     <>
+      {/* Container pentru notificări (toast) */}
+      <Toaster position="top-right" reverseOrder={false} />
+
       {/* DEBUG */}
       <div
         style={{

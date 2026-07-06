@@ -36,7 +36,8 @@ public class DocumentController {
     public ResponseEntity<?> getPractitionerDocuments(@PathVariable String identifier) {
         String cypher = "MATCH (pr:Practitioner)-[:TREATS]->(p:Patient)-[]->(n)-[:source]->(d:Document) WHERE pr.id = $id " +
                         "AND d.name IS NOT NULL " +
-                        "RETURN DISTINCT d.id AS id, d.name AS name, p.id AS patientId, d.uploadDate AS uploadDate " +
+                        "RETURN DISTINCT d.id AS id, d.name AS name, p.id AS patientId, " +
+                        "p.name_given AS patientGiven, p.name_family AS patientFamily, d.uploadDate AS uploadDate " +
                         "ORDER BY d.uploadDate DESC";
         List<Map<String, Object>> docs = new ArrayList<>();
         try (Session session = driver.session()) {
